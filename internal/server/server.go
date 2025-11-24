@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"crypto/tls"
 	"embed"
 	"encoding/json"
@@ -49,6 +50,7 @@ type Server struct {
 	APIHandler    *api.Handler
 	AuthProvider  auth.Provider
 	Cache         cache.Cache
+	Logger        *Logger
 	phpHandlers   map[string]http.Handler
 	proxyHandlers map[string]http.Handler
 }
@@ -84,11 +86,18 @@ func NewServer(cfg *config.Config, configPath string) *Server {
 		fmt.Println("Cache configuration missing. Caching disabled.")
 	}
 
+	// Initialize Logger
+	logger := NewLogger(cfg.LogDir)
+	if err := logger.EnsureDir(); err != nil {
+		fmt.Printf("Warning: Failed to create log directory: %v\n", err)
+	}
+
 	srv := &Server{
 		Config:        cfg,
 		ConfigPath:    configPath,
 		Tpl:           tpl,
 		Cache:         c,
+		Logger:        logger,
 		phpHandlers:   make(map[string]http.Handler),
 		proxyHandlers: make(map[string]http.Handler),
 	}
@@ -127,6 +136,13 @@ func (s *Server) GetConfig() *config.Config {
 func (s *Server) UpdateConfig(cfg *config.Config) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Update Logger config if changed (simple approach: new instance if dir changed)
+	if s.Logger != nil && cfg.LogDir != s.Config.LogDir {
+		s.Logger.Close()
+		s.Logger = NewLogger(cfg.LogDir)
+		s.Logger.EnsureDir()
+	}
 
 	// Update Auth Provider credentials if changed
 	if cfg.AdminUser != "" || cfg.AdminPass != "" {
@@ -281,20 +297,24 @@ func (s *Server) renderError(w http.ResponseWriter, r *http.Request, code int, t
 
 // ServeHTTP implements the http.Handler interface
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 	// Add global Server header
 	w.Header().Set("Server", "Titan Web Server")
 
+	// Capture status code for logging
+	rw := NewResponseWriter(w)
+
 	// 0. Intercept API and Admin requests
 	if strings.HasPrefix(r.URL.Path, "/api/") {
-		s.handleAPI(w, r)
+		s.handleAPI(rw, r)
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/admin") {
-		s.handleAdmin(w, r)
+		s.handleAdmin(rw, r)
 		return
 	}
 	if r.URL.Path == "/login" && r.Method == http.MethodPost {
-		s.handleLogin(w, r)
+		s.handleLogin(rw, r)
 		return
 	}
 
@@ -317,6 +337,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Read config safely
 	s.mu.RLock()
 	cfg := s.Config
+	logger := s.Logger
 	s.mu.RUnlock()
 
 	var matchedSite *config.Site
@@ -328,9 +349,34 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if matchedSite == nil {
-		s.renderError(w, r, 404, "Site non trouvé", "Le domaine demandé n'est pas configuré sur ce serveur.")
+		s.renderError(rw, r, 404, "Site non trouvé", "Le domaine demandé n'est pas configuré sur ce serveur.")
+		// Log 404 for unknown host
+		if logger != nil {
+			logger.AccessLog("unknown", r.Method, r.URL.Path, r.RemoteAddr, 404, time.Since(start))
+		}
 		return
 	}
+
+	// HSTS Handling
+	if matchedSite.SSL != nil && matchedSite.SSL.Enabled && matchedSite.SSL.HSTS != nil && matchedSite.SSL.HSTS.Enabled {
+		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+			val := fmt.Sprintf("max-age=%d", matchedSite.SSL.HSTS.MaxAge)
+			if matchedSite.SSL.HSTS.IncludeSubDomains {
+				val += "; includeSubDomains"
+			}
+			if matchedSite.SSL.HSTS.Preload {
+				val += "; preload"
+			}
+			rw.Header().Set("Strict-Transport-Security", val)
+		}
+	}
+
+	defer func() {
+		// Access Log
+		if logger != nil {
+			logger.AccessLog(matchedSite.Domain, r.Method, r.URL.Path, r.RemoteAddr, rw.Status(), time.Since(start))
+		}
+	}()
 
 	// 2. Match Route (Longest prefix match is usually best, but simple first match for now)
 	// We should ideally sort routes by length descending to avoid prefix collisions.
@@ -343,7 +389,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if matchedRoute == nil {
-		s.renderError(w, r, 404, "Route non trouvée", "Le chemin demandé n'existe pas.")
+		s.renderError(rw, r, 404, "Route non trouvée", "Le chemin demandé n'existe pas.")
 		return
 	}
 
@@ -352,25 +398,109 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "proxy":
 		proxyHandler := s.getProxyHandler(matchedRoute)
 		if proxyHandler == nil {
-			s.renderError(w, r, 500, "Erreur Configuration", "Handler proxy non initialisé")
+			s.renderError(rw, r, 500, "Erreur Configuration", "Handler proxy non initialisé")
+			if logger != nil {
+				logger.ErrorLog(matchedSite.Domain, "Proxy handler not initialized")
+			}
 			return
 		}
-		proxyHandler.ServeHTTP(w, r)
+		proxyHandler.ServeHTTP(rw, r)
 	case "static":
 		fs := http.FileServer(http.Dir(matchedRoute.FileRoot))
 		// Strip prefix so /static/foo.css looks for foo.css in root
-		http.StripPrefix(matchedRoute.Path, fs).ServeHTTP(w, r)
+		http.StripPrefix(matchedRoute.Path, fs).ServeHTTP(rw, r)
 	case "php":
 		handler := s.getPHPHandler(matchedRoute)
 		if handler != nil {
-			handler.ServeHTTP(w, r)
+			handler.ServeHTTP(rw, r)
 		} else {
-			s.renderError(w, r, 500, "Erreur Configuration", "Handler PHP non initialisé")
+			s.renderError(rw, r, 500, "Erreur Configuration", "Handler PHP non initialisé")
+			if logger != nil {
+				logger.ErrorLog(matchedSite.Domain, "PHP handler not initialized")
+			}
 		}
 
 	default:
-		s.renderError(w, r, 500, "Erreur Configuration", "Type de route invalide.")
+		s.renderError(rw, r, 500, "Erreur Configuration", "Type de route invalide.")
 	}
+}
+
+// WatchConfig polls the configuration file for changes
+func (s *Server) WatchConfig() {
+	if s.ConfigPath == "" {
+		return
+	}
+
+	var lastMod time.Time
+	info, err := os.Stat(s.ConfigPath)
+	if err == nil {
+		lastMod = info.ModTime()
+	}
+
+	ticker := time.NewTicker(2 * time.Second)
+	go func() {
+		for range ticker.C {
+			info, err := os.Stat(s.ConfigPath)
+			if err != nil {
+				continue
+			}
+			if info.ModTime().After(lastMod) {
+				lastMod = info.ModTime()
+				fmt.Println("Config file changed, reloading...")
+
+				newCfg, err := config.LoadConfig(s.ConfigPath)
+				if err != nil {
+					fmt.Printf("Error reloading config (keeping old config): %v\n", err)
+					continue
+				}
+
+				if err := newCfg.Validate(); err != nil {
+					fmt.Printf("Config validation failed (keeping old config): %v\n", err)
+					continue
+				}
+
+				if err := s.UpdateConfig(newCfg); err != nil {
+					fmt.Printf("Error updating config: %v\n", err)
+				} else {
+					fmt.Println("Configuration reloaded successfully.")
+				}
+			}
+		}
+	}()
+}
+
+// ResponseWriter wrapper to capture status code
+type ResponseWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func NewResponseWriter(w http.ResponseWriter) *ResponseWriter {
+	return &ResponseWriter{w, http.StatusOK}
+}
+
+func (rw *ResponseWriter) WriteHeader(code int) {
+	rw.status = code
+	rw.ResponseWriter.WriteHeader(code)
+}
+
+func (rw *ResponseWriter) Status() int {
+	return rw.status
+}
+
+// Flush implements http.Flusher
+func (rw *ResponseWriter) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Hijack implements http.Hijacker
+func (rw *ResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := rw.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, errors.New("hijack not supported")
 }
 
 // Start starts the HTTP server
