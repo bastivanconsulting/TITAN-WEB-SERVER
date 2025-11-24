@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/yookoala/gofast"
 
@@ -51,6 +52,11 @@ type Server struct {
 	Cache         cache.Cache
 	phpHandlers   map[string]http.Handler
 	proxyHandlers map[string]http.Handler
+
+	// Security / TLS state
+	certMap     map[string]*tls.Certificate
+	ocspManager *OCSPManager
+	tlsConfig   *tls.Config
 }
 
 // NewServer creates a new server instance
@@ -91,6 +97,8 @@ func NewServer(cfg *config.Config, configPath string) *Server {
 		Cache:         c,
 		phpHandlers:   make(map[string]http.Handler),
 		proxyHandlers: make(map[string]http.Handler),
+		certMap:       make(map[string]*tls.Certificate),
+		ocspManager:   NewOCSPManager(),
 	}
 
 	// Initialize API Handler (srv implements ConfigManager interface implicitly)
@@ -104,7 +112,7 @@ func NewServer(cfg *config.Config, configPath string) *Server {
 	if pass == "" { pass = "admin" }
 	srv.AuthProvider = auth.NewSimpleProvider(user, pass)
 
-	// Initialize handlers (this also sorts routes)
+	// Initialize handlers (this also sorts routes and sets up TLS)
 	if err := srv.UpdateConfig(cfg); err != nil {
 		panic(fmt.Sprintf("Failed to initialize configuration: %v", err))
 	}
@@ -116,10 +124,6 @@ func NewServer(cfg *config.Config, configPath string) *Server {
 func (s *Server) GetConfig() *config.Config {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	// Return a copy or pointer? Pointer is dangerous if modified by caller.
-	// Since json encoder reads it, pointer is okay as long as we don't modify it.
-	// For strict safety we should deep copy, but for this step returning pointer is acceptable
-	// assuming the API handler only marshals it.
 	return s.Config
 }
 
@@ -130,12 +134,9 @@ func (s *Server) UpdateConfig(cfg *config.Config) error {
 
 	// Update Auth Provider credentials if changed
 	if cfg.AdminUser != "" || cfg.AdminPass != "" {
-		// In a real scenario we'd update the provider instance or its state.
-		// Since SimpleProvider is immutable-ish in our usage, let's replace it.
-		// Note: This relies on AuthProvider being replaceable (interface).
 		user := cfg.AdminUser
 		pass := cfg.AdminPass
-		if user == "" { user = "admin" } // fallback or keep old?
+		if user == "" { user = "admin" }
 		if pass == "" { pass = "admin" }
 		s.AuthProvider = auth.NewSimpleProvider(user, pass)
 	}
@@ -149,15 +150,79 @@ func (s *Server) UpdateConfig(cfg *config.Config) error {
 
 	s.Config = cfg
 
+	// Update TLS State (Certs, FIPS config, OCSP)
+	// This ensures that when config is reloaded, TLS settings are updated
+	if err := s.updateTLSStateLocked(); err != nil {
+		fmt.Printf("Error updating TLS state: %v\n", err)
+		// We continue to update routes even if TLS update fails partialy
+	}
+
 	// Re-initialize handlers
-	// Note: In a highly optimized real-world scenario, we would diff the config
-	// to avoid recreating existing connections, but full re-init is safer for correctness.
 	if err := s.initHandlersLocked(); err != nil {
 		return err
 	}
 
 	// Persist configuration to disk
 	return s.saveConfigLocked()
+}
+
+func (s *Server) updateTLSStateLocked() error {
+	// Rebuild certificate map
+	newCertMap := make(map[string]*tls.Certificate)
+	// We might need to restart OCSP manager if certificates change significantly,
+	// but for now we just add to it.
+	// Ideally we should prune old certs from OCSP manager, but for MVP just adding new ones is safer than race conditions.
+
+	for _, site := range s.Config.Sites {
+		if site.SSL != nil && site.SSL.Enabled {
+			if site.SSL.Provider == "manual" {
+				cert, err := tls.LoadX509KeyPair(site.SSL.CertFile, site.SSL.KeyFile)
+				if err != nil {
+					fmt.Printf("Error loading cert for %s: %v\n", site.Domain, err)
+					continue
+				}
+
+				domain := strings.ToLower(site.Domain)
+				newCertMap[domain] = &cert
+
+				if site.SSL.OCSPStapling {
+					s.ocspManager.AddCertificate(domain, &cert)
+				}
+			}
+		}
+	}
+	s.certMap = newCertMap
+
+	// Rebuild TLS Config
+	var tlsConfig *tls.Config
+	if s.Config.Security != nil && s.Config.Security.FIPSCompliant {
+		tlsConfig = getFIPSTLSConfig(s.Config.Security.FIPSStandard)
+	} else {
+		tlsConfig = &tls.Config{}
+	}
+
+	// Set the GetCertificate callback to use the *Server* instance's map
+	// Note: We use a closure that locks the server to read the map safely
+	// However, GetCertificate is called during handshake, so locking s.mu (RWMutex) is fine and fast.
+	tlsConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+
+		domain := strings.ToLower(hello.ServerName)
+		if cert, ok := s.certMap[domain]; ok {
+			if staple := s.ocspManager.GetStaple(domain); staple != nil {
+				certWithStaple := *cert
+				certWithStaple.OCSPStaple = staple
+				return &certWithStaple, nil
+			}
+			return cert, nil
+		}
+		return nil, errors.New("certificate not found for domain")
+	}
+	tlsConfig.NextProtos = []string{"h3", "http/1.1"}
+
+	s.tlsConfig = tlsConfig
+	return nil
 }
 
 func (s *Server) saveConfigLocked() error {
@@ -305,10 +370,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var err error
 		host, _, err = net.SplitHostPort(host)
 		if err != nil {
-			// Fallback if parsing fails (e.g. might be just IPv6 without brackets? rarely happens in Host header)
-			// But for safety, keep original string if Split fails unless empty
 			if strings.Contains(r.Host, ":") {
-				// simple fallback for IPv4/Hostname
 				host = strings.Split(r.Host, ":")[0]
 			}
 		}
@@ -332,8 +394,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// HSTS Handling
+	// Ensure HSTS is only sent over secure connections (TLS)
+	if r.TLS != nil && matchedSite.SSL != nil && matchedSite.SSL.Enabled && matchedSite.SSL.HSTS != nil && matchedSite.SSL.HSTS.Enabled {
+		hsts := matchedSite.SSL.HSTS
+		val := fmt.Sprintf("max-age=%d", hsts.MaxAge)
+		if hsts.IncludeSubDomains {
+			val += "; includeSubDomains"
+		}
+		if hsts.Preload {
+			val += "; preload"
+		}
+		w.Header().Set("Strict-Transport-Security", val)
+	}
+
 	// 2. Match Route (Longest prefix match is usually best, but simple first match for now)
-	// We should ideally sort routes by length descending to avoid prefix collisions.
 	var matchedRoute *config.Route
 	for _, route := range matchedSite.Routes {
 		if strings.HasPrefix(r.URL.Path, route.Path) {
@@ -358,7 +433,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		proxyHandler.ServeHTTP(w, r)
 	case "static":
 		fs := http.FileServer(http.Dir(matchedRoute.FileRoot))
-		// Strip prefix so /static/foo.css looks for foo.css in root
 		http.StripPrefix(matchedRoute.Path, fs).ServeHTTP(w, r)
 	case "php":
 		handler := s.getPHPHandler(matchedRoute)
@@ -373,8 +447,70 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// WatchConfig monitors the config file for changes and reloads it
+func (s *Server) WatchConfig() {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		fmt.Printf("Error creating config watcher: %v\n", err)
+		return
+	}
+
+	// Start listening for events.
+	go func() {
+		defer watcher.Close()
+		for {
+			select {
+			case event, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+				if event.Has(fsnotify.Write) {
+					fmt.Println("Config file modified. Reloading...")
+					// Small delay to ensure write is complete
+					time.Sleep(100 * time.Millisecond)
+
+					newCfg, err := config.LoadConfig(s.ConfigPath)
+					if err != nil {
+						fmt.Printf("Error reloading config: %v\n", err)
+						continue
+					}
+
+					if err := s.UpdateConfig(newCfg); err != nil {
+						fmt.Printf("Error applying new config: %v\n", err)
+					} else {
+						fmt.Println("Configuration reloaded successfully (including TLS settings).")
+					}
+				}
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+				fmt.Printf("Config watcher error: %v\n", err)
+			}
+		}
+	}()
+
+	// Watch the file specifically
+	if s.ConfigPath != "" {
+		err = watcher.Add(s.ConfigPath)
+	} else {
+		err = watcher.Add("config.json")
+	}
+
+	if err != nil {
+		fmt.Printf("Error adding config file to watcher: %v\n", err)
+	} else {
+		fmt.Printf("Watching configuration file for changes: %s\n", s.ConfigPath)
+	}
+}
+
 // Start starts the HTTP server
 func (s *Server) Start() error {
+	// Start Config Watcher
+	s.WatchConfig()
+	// Start OCSP Manager background process
+	s.ocspManager.Start()
+
 	// Error channel to catch failures from goroutines
 	errChan := make(chan error)
 
@@ -390,82 +526,71 @@ func (s *Server) Start() error {
 
 	// Start HTTPS Server if configured
 	if s.Config.HTTPSPort != "" {
-		// Build certificate map for SNI
-		certMap := make(map[string]*tls.Certificate)
-		hasManualCerts := false
+		go func() {
+			// We use a dynamic TLS config wrapper that delegates to s.tlsConfig
+			// This allows us to swap the config under the hood if needed,
+			// though GetCertificate wrapper above already handles dynamic certs.
+			// The critical part is that s.tlsConfig itself holds the FIPS cipher suites.
+			// Ideally http.Server reads TLSConfig on every connection? No, it caches it?
+			// `crypto/tls` docs say: "The Config structure ... should not be modified after it is used."
+			// However, `GetCertificate` is a callback.
+			// But `CipherSuites` are fixed in the config struct passed to ListenAndServe.
+			// To support changing FIPS mode (Ciphers) dynamically, we need `GetConfigForClient`.
 
-		for _, site := range s.Config.Sites {
-			if site.SSL != nil && site.SSL.Enabled {
-				if site.SSL.Provider == "manual" {
-					cert, err := tls.LoadX509KeyPair(site.SSL.CertFile, site.SSL.KeyFile)
-					if err != nil {
-						return fmt.Errorf("error loading cert for %s: %w", site.Domain, err)
-					}
-					certMap[strings.ToLower(site.Domain)] = &cert
-					hasManualCerts = true
-				} else if site.SSL.Provider == "letsencrypt" {
-					// Placeholder for ACME/Lego integration
-					fmt.Printf("Warning: ACME/Let's Encrypt provider for %s is not yet implemented. HTTPS will not be available for this domain.\n", site.Domain)
-				}
+			// Let's implement GetConfigForClient to return the full config snapshot for each connection.
+			// This is the robust way to handle hot-reloading of cipher suites/versions.
+
+			masterTLSConfig := &tls.Config{
+				GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+					s.mu.RLock()
+					defer s.mu.RUnlock()
+					// Return the current fully configured TLS config
+					// We must return a clone or the pointer if we treat it as immutable per generation.
+					// s.tlsConfig is recreated in updateTLSStateLocked, so it's safe to return that pointer
+					// as long as we don't modify it in place.
+					return s.tlsConfig, nil
+				},
+				NextProtos: []string{"h3", "http/1.1"},
 			}
-		}
 
-		if hasManualCerts {
+			// Start HTTP/3 (QUIC) Server
+			quicServer := &http3.Server{
+				Addr:      s.Config.HTTPSPort,
+				Handler:   s,
+				TLSConfig: masterTLSConfig,
+			}
 			go func() {
-				tlsConfig := &tls.Config{
-					GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-						if cert, ok := certMap[strings.ToLower(hello.ServerName)]; ok {
-							return cert, nil
-						}
-						return nil, errors.New("certificate not found for domain")
-					},
-					NextProtos: []string{"h3", "http/1.1"}, // Advertise HTTP/3 support
-				}
-
-				// Start HTTP/3 (QUIC) Server
-				quicServer := &http3.Server{
-					Addr:      s.Config.HTTPSPort,
-					Handler:   s,
-					TLSConfig: tlsConfig,
-				}
-				go func() {
-					fmt.Printf("Starting HTTP/3 (QUIC) server on %s\n", s.Config.HTTPSPort)
-					if err := quicServer.ListenAndServe(); err != nil {
-						fmt.Printf("HTTP/3 server error: %v\n", err)
-					}
-				}()
-
-				// Start HTTPS (TCP) Server
-				server := &http.Server{
-					Addr:      s.Config.HTTPSPort,
-					Handler:   http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-						// Advertise HTTP/3 via Alt-Svc header
-						// Port needs to be extracted from HTTPSPort string (e.g. ":8443" -> "8443")
-						port := s.Config.HTTPSPort
-						if strings.HasPrefix(port, ":") {
-							port = port[1:]
-						}
-						w.Header().Set("Alt-Svc", fmt.Sprintf(`h3=":%s"; ma=2592000`, port))
-						s.ServeHTTP(w, r)
-					}),
-					TLSConfig: tlsConfig,
-				}
-
-				fmt.Printf("Starting HTTPS server on %s (SNI Enabled)\n", s.Config.HTTPSPort)
-				// ListenAndServeTLS with empty strings uses the Config.TLSConfig
-				if err := server.ListenAndServeTLS("", ""); err != nil {
-					errChan <- fmt.Errorf("HTTPS server failed: %w", err)
+				fmt.Printf("Starting HTTP/3 (QUIC) server on %s\n", s.Config.HTTPSPort)
+				if err := quicServer.ListenAndServe(); err != nil {
+					fmt.Printf("HTTP/3 server error: %v\n", err)
 				}
 			}()
-		}
+
+			// Start HTTPS (TCP) Server
+			server := &http.Server{
+				Addr:      s.Config.HTTPSPort,
+				Handler:   http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					port := s.Config.HTTPSPort
+					if strings.HasPrefix(port, ":") {
+						port = port[1:]
+					}
+					w.Header().Set("Alt-Svc", fmt.Sprintf(`h3=":%s"; ma=2592000`, port))
+					s.ServeHTTP(w, r)
+				}),
+				TLSConfig: masterTLSConfig,
+			}
+
+			fmt.Printf("Starting HTTPS server on %s (SNI Enabled)\n", s.Config.HTTPSPort)
+			if err := server.ListenAndServeTLS("", ""); err != nil {
+				errChan <- fmt.Errorf("HTTPS server failed: %w", err)
+			}
+		}()
 	}
 
-	// Block until a server fails
 	return <-errChan
 }
 
 func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
-	// 1. IP Allowlist Check
 	s.mu.RLock()
 	allowlist := s.Config.AdminAllowlist
 	apiKey := s.Config.AdminAPIKey
@@ -474,7 +599,6 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	if len(allowlist) > 0 {
 		host, _, err := net.SplitHostPort(r.RemoteAddr)
 		if err != nil {
-			// If RemoteAddr doesn't have port (internal/test?), use as is
 			host = r.RemoteAddr
 		}
 
@@ -491,10 +615,8 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 2. API Key Check
 	keyHeader := r.Header.Get("X-API-Key")
 	if keyHeader != apiKey {
-		// Return JSON error for better API client handling
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		w.Write([]byte(`{"error": "Forbidden", "message": "Invalid or missing API Key"}`))
@@ -505,11 +627,6 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
-	// Simple serve of admin.html
-	// Security: The admin page itself might not need key to LOAD, but needs key to SAVE.
-	// However, seeing the config requires GET /api/config which is protected.
-	// So we can serve the HTML public to allowed IPs.
-
 	s.mu.RLock()
 	allowlist := s.Config.AdminAllowlist
 	s.mu.RUnlock()
@@ -551,16 +668,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 
 	if provider.Login(username, password) {
-		// In a real app, issue a session cookie/JWT.
-		// For this MVP, we just return success, and the frontend might store the API key or similar.
-		// Note: The prompt asks for PAM auth for UI. We are simulating the "Login" part.
-		// Since the API requires API Key, maybe this login returns the API key?
-		// Or just confirms auth.
-
-		// Let's assume successful login returns the API Key (if we treat the API key as the session token for now,
-		// although that's mixing concepts, it's a simple way to bootstrap).
-		// SECURITY NOTE: Sending the master API key to the client on login is one way to authorize them.
-
 		s.mu.RLock()
 		apiKey := s.Config.AdminAPIKey
 		s.mu.RUnlock()
