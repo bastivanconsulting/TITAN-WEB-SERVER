@@ -10,9 +10,14 @@ A production-ready, high-performance reverse proxy and web server written in Go.
 - **SSL/TLS**: Support for HTTPS with SNI (Server Name Indication) using manual certificates.
 - **High Security**:
   - **FIPS Compliance Mode**: Restricts TLS to FIPS 140-2/3 compliant algorithms and protocols.
-  - **HSTS**: Built-in HTTP Strict Transport Security support.
+  - **HSTS**: Built-in HTTP Strict Transport Security support with preload and subdomain options.
   - **OCSP Stapling**: Automatic fetching and stapling of OCSP responses.
-- **Dynamic Configuration**: Reload routing configuration without restarting the server via API.
+- **Logging**:
+  - Per-domain access and error logs.
+  - Customizable log directory (default: `/var/log/titan/`).
+- **Dynamic Configuration**:
+  - **Hot Reload**: Automatically reloads configuration when `config.json` changes without reboot.
+  - **Validation**: Checks configuration validity on startup and reload.
 - **Admin UI**: Embedded web interface to manage configuration securely.
 - **REST API**: Protected API for automated configuration management.
 
@@ -40,14 +45,14 @@ go build -o proxy-server cmd/server/main.go
 
 ## Configuration
 
-### FIPS Compliance & High Security Example
+### FIPS Compliance & ISO 27001 Security Example
 
-Below is a configuration example enabling FIPS compliance constraints, OCSP Stapling, and HSTS.
+This configuration demonstrates a high-security setup compatible with FIPS and ISO 27001 requirements (logging, strict TLS, HSTS).
 
 ```json
 {
-    "http_port": ":8080",
-    "https_port": ":8443",
+    "http_port": ":80",
+    "https_port": ":443",
     "admin_api_key": "your-secret-key-change-me",
     "admin_user": "admin",
     "admin_pass": "secure-password",
@@ -55,6 +60,7 @@ Below is a configuration example enabling FIPS compliance constraints, OCSP Stap
         "127.0.0.1",
         "::1"
     ],
+    "log_dir": "/var/log/titan/",
     "security": {
         "fips_compliant": true
     },
@@ -89,6 +95,11 @@ Below is a configuration example enabling FIPS compliance constraints, OCSP Stap
 
 ### Configuration Reference
 
+- **Global Settings**:
+  - `http_port` (string): Port for HTTP (e.g., ":80").
+  - `https_port` (string): Port for HTTPS (e.g., ":443").
+  - `log_dir` (string): Directory where access and error logs are stored. Defaults to `/var/log/titan/`.
+
 - **security**:
   - `fips_compliant` (bool): If true, enforces TLS 1.2+ and FIPS-approved cipher suites (AES-GCM, ECDSA, RSA).
 
@@ -99,6 +110,12 @@ Below is a configuration example enabling FIPS compliance constraints, OCSP Stap
     - `max_age` (int): Duration in seconds (e.g., 63072000 for 2 years).
     - `include_subdomains` (bool): Apply to subdomains.
     - `preload` (bool): Enable preload flag.
+
+### Logging
+
+Logs are written to the configured `log_dir`.
+- Access Log: `domain.com-access.log`
+- Error Log: `domain.com-error.log`
 
 ### Route Types
 
