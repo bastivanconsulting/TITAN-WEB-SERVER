@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/quic-go/quic-go/http3"
 	"github.com/yookoala/gofast"
 
 	"custom-proxy/internal/api"
@@ -280,6 +281,9 @@ func (s *Server) renderError(w http.ResponseWriter, r *http.Request, code int, t
 
 // ServeHTTP implements the http.Handler interface
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Add global Server header
+	w.Header().Set("Server", "Titan Web Server")
+
 	// 0. Intercept API and Admin requests
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		s.handleAPI(w, r)
@@ -415,11 +419,35 @@ func (s *Server) Start() error {
 						}
 						return nil, errors.New("certificate not found for domain")
 					},
+					NextProtos: []string{"h3", "http/1.1"}, // Advertise HTTP/3 support
 				}
 
-				server := &http.Server{
+				// Start HTTP/3 (QUIC) Server
+				quicServer := &http3.Server{
 					Addr:      s.Config.HTTPSPort,
 					Handler:   s,
+					TLSConfig: tlsConfig,
+				}
+				go func() {
+					fmt.Printf("Starting HTTP/3 (QUIC) server on %s\n", s.Config.HTTPSPort)
+					if err := quicServer.ListenAndServe(); err != nil {
+						fmt.Printf("HTTP/3 server error: %v\n", err)
+					}
+				}()
+
+				// Start HTTPS (TCP) Server
+				server := &http.Server{
+					Addr:      s.Config.HTTPSPort,
+					Handler:   http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						// Advertise HTTP/3 via Alt-Svc header
+						// Port needs to be extracted from HTTPSPort string (e.g. ":8443" -> "8443")
+						port := s.Config.HTTPSPort
+						if strings.HasPrefix(port, ":") {
+							port = port[1:]
+						}
+						w.Header().Set("Alt-Svc", fmt.Sprintf(`h3=":%s"; ma=2592000`, port))
+						s.ServeHTTP(w, r)
+					}),
 					TLSConfig: tlsConfig,
 				}
 

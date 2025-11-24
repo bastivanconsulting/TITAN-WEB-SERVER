@@ -1,7 +1,19 @@
 module custom-proxy
 
-go 1.22.0
+go 1.24
 
-require github.com/yookoala/gofast v0.8.0
+toolchain go1.24.3
 
-require golang.org/x/tools v0.0.0-20200908211811-12e1bf57a112 // indirect
+require (
+	github.com/quic-go/quic-go v0.57.0
+	github.com/yookoala/gofast v0.8.0
+)
+
+require (
+	github.com/quic-go/qpack v0.6.0 // indirect
+	golang.org/x/crypto v0.41.0 // indirect
+	golang.org/x/net v0.43.0 // indirect
+	golang.org/x/sys v0.35.0 // indirect
+	golang.org/x/text v0.28.0 // indirect
+	golang.org/x/tools v0.36.0 // indirect
+)
