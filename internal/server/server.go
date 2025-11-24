@@ -19,6 +19,7 @@ import (
 
 	"custom-proxy/internal/api"
 	"custom-proxy/internal/auth"
+	"custom-proxy/internal/cache"
 	"custom-proxy/internal/config"
 	"custom-proxy/internal/proxy"
 )
@@ -46,6 +47,7 @@ type Server struct {
 	Tpl           *template.Template
 	APIHandler    *api.Handler
 	AuthProvider  auth.Provider
+	Cache         cache.Cache
 	phpHandlers   map[string]http.Handler
 	proxyHandlers map[string]http.Handler
 }
@@ -59,10 +61,33 @@ func NewServer(cfg *config.Config, configPath string) *Server {
 		fmt.Printf("Warning: Could not load error.html: %v\n", err)
 	}
 
+	// Initialize Cache
+	var c cache.Cache
+	if cfg.Cache != nil {
+		if cfg.Cache.Type == "disk" {
+			var err error
+			c, err = cache.NewDiskCache(cfg.Cache.Path)
+			if err != nil {
+				fmt.Printf("Error initializing disk cache: %v. Caching disabled.\n", err)
+				c = nil
+			} else {
+				fmt.Printf("Initialized disk cache at %s\n", cfg.Cache.Path)
+			}
+		} else if cfg.Cache.Type == "memory" {
+			c = cache.NewMemoryCache()
+			fmt.Println("Initialized memory cache")
+		} else {
+			fmt.Printf("Unknown cache type '%s'. Caching disabled.\n", cfg.Cache.Type)
+		}
+	} else {
+		fmt.Println("Cache configuration missing. Caching disabled.")
+	}
+
 	srv := &Server{
 		Config:        cfg,
 		ConfigPath:    configPath,
 		Tpl:           tpl,
+		Cache:         c,
 		phpHandlers:   make(map[string]http.Handler),
 		proxyHandlers: make(map[string]http.Handler),
 	}
@@ -200,7 +225,13 @@ func (s *Server) initHandlersLocked() error {
 					s.renderError(w, r, 502, "Erreur Gateway", fmt.Sprintf("Le serveur backend est inaccessible: %v", err))
 				}
 
-				proxyHandler, err := proxy.NewProxyHandler(route.ProxyTarget, errorHandler)
+				opts := proxy.ProxyOptions{
+					Target:       route.ProxyTarget,
+					ErrorHandler: errorHandler,
+					Cache:        s.Cache,
+					CacheTTL:     60 * time.Second, // Default TTL
+				}
+				proxyHandler, err := proxy.NewProxyHandler(opts)
 				if err != nil {
 					return fmt.Errorf("error initializing proxy for %s: %v", route.ProxyTarget, err)
 				}

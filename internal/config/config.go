@@ -13,7 +13,14 @@ type Config struct {
 	AdminUser      string   `json:"admin_user"`       // Username for login
 	AdminPass      string   `json:"admin_pass"`       // Password for login (plaintext for MVP)
 	AdminAllowlist []string `json:"admin_allowlist"`  // IPs allowed to access admin API
+	Cache          *Cache   `json:"cache"`            // Cache configuration
 	Sites          []Site   `json:"sites"`
+}
+
+// Cache configuration
+type Cache struct {
+	Type string `json:"type"` // "memory" or "disk"
+	Path string `json:"path"` // Path for disk cache
 }
 
 // Site represents a virtual host
