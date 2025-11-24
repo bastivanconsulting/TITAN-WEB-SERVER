@@ -5,8 +5,8 @@ import (
 	"log"
 	"os"
 
-	"custom-proxy/internal/config"
-	"custom-proxy/internal/server"
+	"titan-web-server/internal/config"
+	"titan-web-server/internal/server"
 )
 
 func main() {
@@ -19,7 +19,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Validate config before starting
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("Invalid configuration: %v", err)
+		os.Exit(1)
+	}
+
 	srv := server.NewServer(cfg, *configFile)
+
+	// Start config watcher
+	srv.WatchConfig()
+
 	if err := srv.Start(); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}

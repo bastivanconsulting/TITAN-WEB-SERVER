@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"custom-proxy/internal/cache"
-	"custom-proxy/internal/proxy"
+	"titan-web-server/internal/cache"
+	"titan-web-server/internal/proxy"
 )
 
 func TestProxyCache(t *testing.T) {
