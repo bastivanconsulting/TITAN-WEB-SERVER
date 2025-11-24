@@ -7,14 +7,20 @@ import (
 
 // Config represents the global configuration
 type Config struct {
-	HTTPPort       string   `json:"http_port"`        // e.g. ":80"
-	HTTPSPort      string   `json:"https_port"`       // e.g. ":443"
-	AdminAPIKey    string   `json:"admin_api_key"`    // API Key for management
-	AdminUser      string   `json:"admin_user"`       // Username for login
-	AdminPass      string   `json:"admin_pass"`       // Password for login (plaintext for MVP)
-	AdminAllowlist []string `json:"admin_allowlist"`  // IPs allowed to access admin API
-	Cache          *Cache   `json:"cache"`            // Cache configuration
-	Sites          []Site   `json:"sites"`
+	HTTPPort       string          `json:"http_port"`        // e.g. ":80"
+	HTTPSPort      string          `json:"https_port"`       // e.g. ":443"
+	AdminAPIKey    string          `json:"admin_api_key"`    // API Key for management
+	AdminUser      string          `json:"admin_user"`       // Username for login
+	AdminPass      string          `json:"admin_pass"`       // Password for login (plaintext for MVP)
+	AdminAllowlist []string        `json:"admin_allowlist"`  // IPs allowed to access admin API
+	Cache          *Cache          `json:"cache"`            // Cache configuration
+	Security       *GlobalSecurity `json:"security"`         // Global security settings
+	Sites          []Site          `json:"sites"`
+}
+
+// GlobalSecurity holds global security settings
+type GlobalSecurity struct {
+	FIPSCompliant bool `json:"fips_compliant"` // Enforce FIPS 140-2/3 compliant TLS settings
 }
 
 // Cache configuration
@@ -32,11 +38,21 @@ type Site struct {
 
 // SSL represents SSL configuration
 type SSL struct {
-	Enabled      bool   `json:"enabled"`
-	Email        string `json:"email"`        // For ACME registration
-	CertFile     string `json:"cert_file"`    // Manual cert
-	KeyFile      string `json:"key_file"`     // Manual key
-	Provider     string `json:"provider"`     // "letsencrypt", "selfsigned", "manual"
+	Enabled      bool        `json:"enabled"`
+	Email        string      `json:"email"`         // For ACME registration
+	CertFile     string      `json:"cert_file"`     // Manual cert
+	KeyFile      string      `json:"key_file"`      // Manual key
+	Provider     string      `json:"provider"`      // "letsencrypt", "selfsigned", "manual"
+	HSTS         *HSTSConfig `json:"hsts,omitempty"` // HSTS Configuration
+	OCSPStapling bool        `json:"ocsp_stapling"`  // Enable OCSP Stapling
+}
+
+// HSTSConfig represents HTTP Strict Transport Security settings
+type HSTSConfig struct {
+	Enabled           bool `json:"enabled"`
+	MaxAge            int  `json:"max_age"` // Seconds
+	IncludeSubDomains bool `json:"include_subdomains"`
+	Preload           bool `json:"preload"`
 }
 
 // Route represents a path rule
