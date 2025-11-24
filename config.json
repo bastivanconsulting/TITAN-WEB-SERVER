@@ -1,0 +1,30 @@
+{
+    "http_port": ":8080",
+    "https_port": "",
+    "admin_api_key": "secret123",
+    "admin_user": "admin",
+    "admin_pass": "securePass123",
+    "admin_allowlist": [
+        "127.0.0.1",
+        "::1"
+    ],
+    "sites": [
+        {
+            "domain": "localhost",
+            "routes": [
+                {
+                    "path": "/static",
+                    "type": "static",
+                    "proxy_target": "",
+                    "file_root": "./test_static"
+                },
+                {
+                    "path": "/proxy",
+                    "type": "proxy",
+                    "proxy_target": "http://google.com",
+                    "file_root": ""
+                }
+            ]
+        }
+    ]
+}

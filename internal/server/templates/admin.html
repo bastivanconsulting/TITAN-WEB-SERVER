@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Server Admin</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #f4f4f4; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        h1 { margin-top: 0; }
+        textarea { width: 100%; height: 300px; font-family: monospace; }
+        button { padding: 10px 20px; background: #007bff; color: white; border: none; cursor: pointer; border-radius: 4px; }
+        button:hover { background: #0056b3; }
+        .message { padding: 10px; margin-top: 10px; border-radius: 4px; display: none; }
+        .success { background: #d4edda; color: #155724; }
+        .error { background: #f8d7da; color: #721c24; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Server Configuration</h1>
+        <p>API Key required for changes.</p>
+        <div style="margin-bottom: 10px; display: flex; gap: 10px;">
+            <input type="password" id="apiKey" placeholder="Admin API Key" style="flex-grow: 1; padding: 8px; box-sizing: border-box;">
+            <button onclick="loadConfig()">Load Config</button>
+        </div>
+        <textarea id="configEditor"></textarea>
+        <br><br>
+        <button onclick="saveConfig()">Save Configuration</button>
+        <div id="message" class="message"></div>
+    </div>
+
+    <script>
+        const apiKeyInput = document.getElementById('apiKey');
+        const editor = document.getElementById('configEditor');
+        const msgDiv = document.getElementById('message');
+
+        // Initial load attempt? No, wait for key.
+        // Or try to load and if 403, tell user to enter key.
+
+        function loadConfig() {
+             const apiKey = apiKeyInput.value;
+            if (!apiKey) {
+                showMsg('Please enter API Key to load config', 'error');
+                return;
+            }
+
+            fetch('/api/config', {
+                headers: {
+                    'X-API-Key': apiKey
+                }
+            })
+            .then(async res => {
+                if (res.status === 403) {
+                    throw new Error("Invalid API Key");
+                }
+                if (!res.ok) {
+                    const text = await res.text();
+                    throw new Error(text);
+                }
+                return res.json();
+            })
+            .then(data => {
+                editor.value = JSON.stringify(data, null, 4);
+                showMsg('Configuration loaded', 'success');
+            })
+            .catch(err => {
+                showMsg('Failed to load: ' + err.message, 'error');
+            });
+        }
+
+        // Auto-load if key is saved in localStorage (optional enhancement)
+        const savedKey = localStorage.getItem('admin_api_key');
+        if (savedKey) {
+            apiKeyInput.value = savedKey;
+            loadConfig();
+        }
+
+        function saveConfig() {
+            const apiKey = apiKeyInput.value;
+            localStorage.setItem('admin_api_key', apiKey); // Save for convenience
+            if (!apiKey) {
+                showMsg('Please enter API Key', 'error');
+                return;
+            }
+
+            try {
+                const config = JSON.parse(editor.value);
+                fetch('/api/config', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-API-Key': apiKey
+                    },
+                    body: JSON.stringify(config)
+                })
+                .then(async res => {
+                    const text = await res.text();
+                    if (res.ok) {
+                        showMsg('Saved successfully!', 'success');
+                    } else {
+                        showMsg('Error: ' + text, 'error');
+                    }
+                })
+                .catch(err => {
+                    showMsg('Network error: ' + err, 'error');
+                });
+            } catch (e) {
+                showMsg('Invalid JSON: ' + e, 'error');
+            }
+        }
+
+        function showMsg(text, type) {
+            msgDiv.textContent = text;
+            msgDiv.className = 'message ' + type;
+            msgDiv.style.display = 'block';
+        }
+    </script>
+</body>
+</html>

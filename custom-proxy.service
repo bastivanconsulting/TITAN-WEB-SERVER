@@ -1,0 +1,15 @@
+[Unit]
+Description=Custom Proxy Server
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+ExecStart=/usr/local/bin/proxy-server -config /etc/custom-proxy/config.json
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
