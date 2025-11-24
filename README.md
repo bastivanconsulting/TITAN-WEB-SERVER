@@ -40,28 +40,44 @@ By default, it looks for `config.json` in the current directory.
 
 ## Configuration
 
-The configuration is a JSON file structure:
+The configuration is a JSON file structure. Below is a comprehensive example showing all available options:
 
 ```json
 {
     "http_port": ":8080",
     "https_port": ":8443",
-    "admin_api_key": "your-secret-key",
-    "admin_allowlist": ["127.0.0.1", "::1"],
+    "admin_api_key": "your-secret-key-change-me",
+    "admin_user": "admin",
+    "admin_pass": "secure-password",
+    "admin_allowlist": [
+        "127.0.0.1",
+        "::1",
+        "192.168.1.100"
+    ],
+    "cache": {
+        "type": "disk",
+        "path": "/tmp/proxy-cache"
+    },
     "sites": [
         {
             "domain": "example.com",
             "ssl": {
                 "enabled": true,
                 "provider": "manual",
-                "cert_file": "/path/to/cert.pem",
-                "key_file": "/path/to/key.pem"
+                "cert_file": "/etc/ssl/certs/example.com.crt",
+                "key_file": "/etc/ssl/private/example.com.key",
+                "email": "admin@example.com"
             },
             "routes": [
                 {
                     "path": "/api",
                     "type": "proxy",
                     "proxy_target": "http://localhost:3000"
+                },
+                {
+                    "path": "/assets",
+                    "type": "static",
+                    "file_root": "/var/www/html/assets"
                 },
                 {
                     "path": "/",
@@ -78,6 +94,19 @@ The configuration is a JSON file structure:
                     "type": "php",
                     "proxy_target": "tcp://127.0.0.1:9000",
                     "file_root": "/var/www/app"
+                }
+            ]
+        },
+        {
+            "domain": "memory-cache.local",
+            "ssl": {
+                "enabled": false
+            },
+            "routes": [
+                {
+                    "path": "/",
+                    "type": "proxy",
+                    "proxy_target": "http://localhost:8081"
                 }
             ]
         }
