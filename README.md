@@ -8,17 +8,19 @@ A production-ready, high-performance reverse proxy and web server written in Go.
 - **Web Server**: Serve static files and PHP applications (via FastCGI/PHP-FPM).
 - **HTTP/3 & QUIC**: Native support for next-generation HTTP/3 protocol via QUIC.
 - **SSL/TLS**: Support for HTTPS with SNI (Server Name Indication) using manual certificates.
-- **Dynamic Configuration**: Reload routing configuration without restarting the server via API. (Note: Port changes require a restart).
+- **High Security**:
+  - **FIPS Compliance Mode**: Restricts TLS to FIPS 140-2/3 compliant algorithms and protocols.
+  - **HSTS**: Built-in HTTP Strict Transport Security support.
+  - **OCSP Stapling**: Automatic fetching and stapling of OCSP responses.
+- **Dynamic Configuration**: Reload routing configuration without restarting the server via API.
 - **Admin UI**: Embedded web interface to manage configuration securely.
 - **REST API**: Protected API for automated configuration management.
-- **Security**: IP Allowlisting and API Key protection for administrative endpoints.
-- **Custom Error Pages**: Classy, Google-style minimal error pages.
 
 ## Installation
 
 ### Prerequisites
 
-- Go 1.22 or later
+- Go 1.24 or later
 - PHP-FPM (optional, for PHP support)
 
 ### Build
@@ -36,11 +38,11 @@ go build -o proxy-server cmd/server/main.go
 ./proxy-server -config config.json
 ```
 
-By default, it looks for `config.json` in the current directory.
-
 ## Configuration
 
-The configuration is a JSON file structure. Below is a comprehensive example showing all available options:
+### FIPS Compliance & High Security Example
+
+Below is a configuration example enabling FIPS compliance constraints, OCSP Stapling, and HSTS.
 
 ```json
 {
@@ -51,62 +53,33 @@ The configuration is a JSON file structure. Below is a comprehensive example sho
     "admin_pass": "secure-password",
     "admin_allowlist": [
         "127.0.0.1",
-        "::1",
-        "192.168.1.100"
+        "::1"
     ],
-    "cache": {
-        "type": "disk",
-        "path": "/tmp/proxy-cache"
+    "security": {
+        "fips_compliant": true
     },
     "sites": [
         {
-            "domain": "example.com",
+            "domain": "secure.example.com",
             "ssl": {
                 "enabled": true,
                 "provider": "manual",
-                "cert_file": "/etc/ssl/certs/example.com.crt",
-                "key_file": "/etc/ssl/private/example.com.key",
-                "email": "admin@example.com"
+                "cert_file": "/etc/ssl/certs/secure.example.com.crt",
+                "key_file": "/etc/ssl/private/secure.example.com.key",
+                "email": "admin@example.com",
+                "ocsp_stapling": true,
+                "hsts": {
+                    "enabled": true,
+                    "max_age": 63072000,
+                    "include_subdomains": true,
+                    "preload": true
+                }
             },
             "routes": [
                 {
-                    "path": "/api",
+                    "path": "/",
                     "type": "proxy",
                     "proxy_target": "http://localhost:3000"
-                },
-                {
-                    "path": "/assets",
-                    "type": "static",
-                    "file_root": "/var/www/html/assets"
-                },
-                {
-                    "path": "/",
-                    "type": "static",
-                    "file_root": "/var/www/html"
-                }
-            ]
-        },
-        {
-            "domain": "app.local",
-            "routes": [
-                {
-                    "path": "/",
-                    "type": "php",
-                    "proxy_target": "tcp://127.0.0.1:9000",
-                    "file_root": "/var/www/app"
-                }
-            ]
-        },
-        {
-            "domain": "memory-cache.local",
-            "ssl": {
-                "enabled": false
-            },
-            "routes": [
-                {
-                    "path": "/",
-                    "type": "proxy",
-                    "proxy_target": "http://localhost:8081"
                 }
             ]
         }
@@ -114,11 +87,24 @@ The configuration is a JSON file structure. Below is a comprehensive example sho
 }
 ```
 
+### Configuration Reference
+
+- **security**:
+  - `fips_compliant` (bool): If true, enforces TLS 1.2+ and FIPS-approved cipher suites (AES-GCM, ECDSA, RSA).
+
+- **ssl**:
+  - `ocsp_stapling` (bool): If true, the server attempts to fetch OCSP status from the issuer and staple it to the handshake.
+  - `hsts` (object):
+    - `enabled` (bool): Enable HSTS header.
+    - `max_age` (int): Duration in seconds (e.g., 63072000 for 2 years).
+    - `include_subdomains` (bool): Apply to subdomains.
+    - `preload` (bool): Enable preload flag.
+
 ### Route Types
 
 - **static**: Serves files from `file_root`.
 - **proxy**: Forwards requests to `proxy_target`.
-- **php**: Forwards requests to a PHP-FPM server (specified in `proxy_target`, e.g., `tcp://127.0.0.1:9000` or `unix:///var/run/php/php-fpm.sock`).
+- **php**: Forwards requests to a PHP-FPM server.
 
 ## Administration
 
@@ -137,18 +123,8 @@ You must enter the `admin_api_key` to load or save configuration.
 **Headers required**:
 - `X-API-Key`: <your-admin-api-key>
 
-**Example**:
-
 ```bash
 curl -H "X-API-Key: secret" http://localhost:8080/api/config
-```
-
-## Authentication
-
-A `/login` endpoint is available for integration with external tools or future UI enhancements. It validates username/password against the internal provider (currently simple/mock).
-
-```bash
-curl -X POST -d "username=admin&password=admin123" http://localhost:8080/login
 ```
 
 ## License

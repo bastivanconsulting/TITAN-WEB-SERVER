@@ -392,7 +392,9 @@ func (s *Server) Start() error {
 	if s.Config.HTTPSPort != "" {
 		// Build certificate map for SNI
 		certMap := make(map[string]*tls.Certificate)
+		ocspManager := NewOCSPManager()
 		hasManualCerts := false
+		hasOCSP := false
 
 		for _, site := range s.Config.Sites {
 			if site.SSL != nil && site.SSL.Enabled {
@@ -401,8 +403,15 @@ func (s *Server) Start() error {
 					if err != nil {
 						return fmt.Errorf("error loading cert for %s: %w", site.Domain, err)
 					}
-					certMap[strings.ToLower(site.Domain)] = &cert
+
+					domain := strings.ToLower(site.Domain)
+					certMap[domain] = &cert
 					hasManualCerts = true
+
+					if site.SSL.OCSPStapling {
+						ocspManager.AddCertificate(domain, &cert)
+						hasOCSP = true
+					}
 				} else if site.SSL.Provider == "letsencrypt" {
 					// Placeholder for ACME/Lego integration
 					fmt.Printf("Warning: ACME/Let's Encrypt provider for %s is not yet implemented. HTTPS will not be available for this domain.\n", site.Domain)
@@ -410,17 +419,35 @@ func (s *Server) Start() error {
 			}
 		}
 
+		if hasOCSP {
+			ocspManager.Start()
+		}
+
 		if hasManualCerts {
 			go func() {
-				tlsConfig := &tls.Config{
-					GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-						if cert, ok := certMap[strings.ToLower(hello.ServerName)]; ok {
-							return cert, nil
-						}
-						return nil, errors.New("certificate not found for domain")
-					},
-					NextProtos: []string{"h3", "http/1.1"}, // Advertise HTTP/3 support
+				var tlsConfig *tls.Config
+				if s.Config.Security != nil && s.Config.Security.FIPSCompliant {
+					tlsConfig = getFIPSTLSConfig()
+					fmt.Println("Security: FIPS Compliance constraints enabled (TLS 1.2+, Strong Ciphers).")
+				} else {
+					tlsConfig = &tls.Config{}
 				}
+
+				tlsConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+					domain := strings.ToLower(hello.ServerName)
+					if cert, ok := certMap[domain]; ok {
+						// Apply OCSP Staple if available
+						if staple := ocspManager.GetStaple(domain); staple != nil {
+							// Return a shallow copy with the staple
+							certWithStaple := *cert
+							certWithStaple.OCSPStaple = staple
+							return &certWithStaple, nil
+						}
+						return cert, nil
+					}
+					return nil, errors.New("certificate not found for domain")
+				}
+				tlsConfig.NextProtos = []string{"h3", "http/1.1"} // Advertise HTTP/3 support
 
 				// Start HTTP/3 (QUIC) Server
 				quicServer := &http3.Server{
