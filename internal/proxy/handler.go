@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"custom-proxy/internal/cache"
+	"titan-web-server/internal/cache"
 )
 
 // ErrorHandlerFunc is a callback for handling proxy errors
@@ -93,6 +93,12 @@ func NewProxyHandler(opts ProxyOptions) (http.Handler, error) {
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// WebSocket Support: Skip caching and recorder for WebSockets
+		if strings.ToLower(r.Header.Get("Upgrade")) == "websocket" {
+			proxy.ServeHTTP(w, r)
+			return
+		}
+
 		// Only cache GET requests
 		if r.Method != http.MethodGet {
 			proxy.ServeHTTP(w, r)

@@ -19,11 +19,11 @@ import (
 	"github.com/quic-go/quic-go/http3"
 	"github.com/yookoala/gofast"
 
-	"custom-proxy/internal/api"
-	"custom-proxy/internal/auth"
-	"custom-proxy/internal/cache"
-	"custom-proxy/internal/config"
-	"custom-proxy/internal/proxy"
+	"titan-web-server/internal/api"
+	"titan-web-server/internal/auth"
+	"titan-web-server/internal/cache"
+	"titan-web-server/internal/config"
+	"titan-web-server/internal/proxy"
 )
 
 //go:embed templates/error.html

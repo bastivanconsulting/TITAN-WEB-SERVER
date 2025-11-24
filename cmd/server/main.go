@@ -5,8 +5,8 @@ import (
 	"log"
 	"os"
 
-	"custom-proxy/internal/config"
-	"custom-proxy/internal/server"
+	"titan-web-server/internal/config"
+	"titan-web-server/internal/server"
 )
 
 func main() {
