@@ -1,0 +1,6 @@
+Cache configuration missing. Caching disabled.
+Warning: Failed to create log directory: mkdir /var/log/titan/: permission denied
+Warning: ACME/Let's Encrypt provider for www.example.com is not yet implemented. HTTPS will not be available for this domain.
+Starting HTTP server on :8080
+2025/11/24 23:55:40 Server failed: error loading cert for app.internal.local: open /etc/ssl/certs/app.crt: no such file or directory
+exit status 1

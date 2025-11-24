@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"custom-proxy/internal/config"
+	"titan-web-server/internal/config"
 )
 
 // ConfigManager is an interface that allows the API to get and update the server configuration

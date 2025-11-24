@@ -1,28 +1,88 @@
 {
     "http_port": ":8080",
-    "https_port": "",
-    "admin_api_key": "secret123",
+    "https_port": ":8443",
+    "admin_api_key": "change-this-secret-key",
     "admin_user": "admin",
-    "admin_pass": "securePass123",
+    "admin_pass": "change-this-password",
     "admin_allowlist": [
         "127.0.0.1",
         "::1"
     ],
+    "log_dir": "/var/log/titan/",
+    "cache": null,
+    "security": {
+        "fips_compliant": true
+    },
     "sites": [
+        {
+            "domain": "www.example.com",
+            "routes": [
+                {
+                    "path": "/",
+                    "type": "static",
+                    "proxy_target": "",
+                    "file_root": "/var/www/example.com/public"
+                }
+            ],
+            "ssl": {
+                "enabled": true,
+                "email": "webmaster@example.com",
+                "cert_file": "",
+                "key_file": "",
+                "provider": "letsencrypt",
+                "hsts": {
+                    "enabled": true,
+                    "max_age": 31536000,
+                    "include_subdomains": true,
+                    "preload": true
+                },
+                "ocsp_stapling": true
+            }
+        },
+        {
+            "domain": "app.internal.local",
+            "routes": [
+                {
+                    "path": "/",
+                    "type": "proxy",
+                    "proxy_target": "http://127.0.0.1:3000",
+                    "file_root": ""
+                }
+            ],
+            "ssl": {
+                "enabled": true,
+                "email": "",
+                "cert_file": "/etc/ssl/certs/app.crt",
+                "key_file": "/etc/ssl/private/app.key",
+                "provider": "manual",
+                "ocsp_stapling": false
+            }
+        },
+        {
+            "domain": "legacy.local",
+            "routes": [
+                {
+                    "path": "/",
+                    "type": "php",
+                    "proxy_target": "127.0.0.1:9000",
+                    "file_root": "/var/www/legacy/public"
+                }
+            ]
+        },
         {
             "domain": "localhost",
             "routes": [
                 {
-                    "path": "/static",
-                    "type": "static",
-                    "proxy_target": "",
-                    "file_root": "./test_static"
-                },
-                {
-                    "path": "/proxy",
+                    "path": "/google",
                     "type": "proxy",
                     "proxy_target": "http://google.com",
                     "file_root": ""
+                },
+                {
+                    "path": "/",
+                    "type": "static",
+                    "proxy_target": "",
+                    "file_root": "./test_static"
                 }
             ]
         }

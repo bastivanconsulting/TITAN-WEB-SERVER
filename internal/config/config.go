@@ -2,6 +2,8 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 )
 
@@ -13,9 +15,35 @@ type Config struct {
 	AdminUser      string          `json:"admin_user"`       // Username for login
 	AdminPass      string          `json:"admin_pass"`       // Password for login (plaintext for MVP)
 	AdminAllowlist []string        `json:"admin_allowlist"`  // IPs allowed to access admin API
+	LogDir         string          `json:"log_dir"`          // Directory for log files (default: /var/log/titan/)
 	Cache          *Cache          `json:"cache"`            // Cache configuration
 	Security       *GlobalSecurity `json:"security"`         // Global security settings
 	Sites          []Site          `json:"sites"`
+}
+
+// Validate checks the configuration for errors
+func (c *Config) Validate() error {
+	if c.HTTPPort == "" && c.HTTPSPort == "" {
+		return errors.New("at least one of http_port or https_port must be set")
+	}
+
+	for i, site := range c.Sites {
+		if site.Domain == "" {
+			return fmt.Errorf("site #%d missing domain", i)
+		}
+		for j, route := range site.Routes {
+			if route.Path == "" {
+				return fmt.Errorf("site %s route #%d missing path", site.Domain, j)
+			}
+			if route.Type == "proxy" && route.ProxyTarget == "" {
+				return fmt.Errorf("site %s route %s missing proxy_target", site.Domain, route.Path)
+			}
+			if (route.Type == "static" || route.Type == "php") && route.FileRoot == "" {
+				return fmt.Errorf("site %s route %s missing file_root", site.Domain, route.Path)
+			}
+		}
+	}
+	return nil
 }
 
 // GlobalSecurity holds global security settings
