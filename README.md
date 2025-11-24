@@ -6,12 +6,13 @@ A production-ready, high-performance reverse proxy and web server written in Go.
 
 - **Reverse Proxy**: Forward traffic to backend servers (HTTP/HTTPS).
 - **Web Server**: Serve static files and PHP applications (via FastCGI/PHP-FPM).
+- **HTTP/3 & QUIC**: Native support for next-generation HTTP/3 protocol via QUIC.
 - **SSL/TLS**: Support for HTTPS with SNI (Server Name Indication) using manual certificates.
 - **Dynamic Configuration**: Reload routing configuration without restarting the server via API. (Note: Port changes require a restart).
 - **Admin UI**: Embedded web interface to manage configuration securely.
 - **REST API**: Protected API for automated configuration management.
 - **Security**: IP Allowlisting and API Key protection for administrative endpoints.
-- **Custom Error Pages**: User-friendly error pages (localized in French).
+- **Custom Error Pages**: Classy, Google-style minimal error pages.
 
 ## Installation
 

@@ -15,10 +15,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/quic-go/quic-go/http3"
 	"github.com/yookoala/gofast"
 
 	"custom-proxy/internal/api"
 	"custom-proxy/internal/auth"
+	"custom-proxy/internal/cache"
 	"custom-proxy/internal/config"
 	"custom-proxy/internal/proxy"
 )
@@ -46,6 +48,7 @@ type Server struct {
 	Tpl           *template.Template
 	APIHandler    *api.Handler
 	AuthProvider  auth.Provider
+	Cache         cache.Cache
 	phpHandlers   map[string]http.Handler
 	proxyHandlers map[string]http.Handler
 }
@@ -59,10 +62,33 @@ func NewServer(cfg *config.Config, configPath string) *Server {
 		fmt.Printf("Warning: Could not load error.html: %v\n", err)
 	}
 
+	// Initialize Cache
+	var c cache.Cache
+	if cfg.Cache != nil {
+		if cfg.Cache.Type == "disk" {
+			var err error
+			c, err = cache.NewDiskCache(cfg.Cache.Path)
+			if err != nil {
+				fmt.Printf("Error initializing disk cache: %v. Caching disabled.\n", err)
+				c = nil
+			} else {
+				fmt.Printf("Initialized disk cache at %s\n", cfg.Cache.Path)
+			}
+		} else if cfg.Cache.Type == "memory" {
+			c = cache.NewMemoryCache()
+			fmt.Println("Initialized memory cache")
+		} else {
+			fmt.Printf("Unknown cache type '%s'. Caching disabled.\n", cfg.Cache.Type)
+		}
+	} else {
+		fmt.Println("Cache configuration missing. Caching disabled.")
+	}
+
 	srv := &Server{
 		Config:        cfg,
 		ConfigPath:    configPath,
 		Tpl:           tpl,
+		Cache:         c,
 		phpHandlers:   make(map[string]http.Handler),
 		proxyHandlers: make(map[string]http.Handler),
 	}
@@ -200,7 +226,13 @@ func (s *Server) initHandlersLocked() error {
 					s.renderError(w, r, 502, "Erreur Gateway", fmt.Sprintf("Le serveur backend est inaccessible: %v", err))
 				}
 
-				proxyHandler, err := proxy.NewProxyHandler(route.ProxyTarget, errorHandler)
+				opts := proxy.ProxyOptions{
+					Target:       route.ProxyTarget,
+					ErrorHandler: errorHandler,
+					Cache:        s.Cache,
+					CacheTTL:     60 * time.Second, // Default TTL
+				}
+				proxyHandler, err := proxy.NewProxyHandler(opts)
 				if err != nil {
 					return fmt.Errorf("error initializing proxy for %s: %v", route.ProxyTarget, err)
 				}
@@ -249,6 +281,9 @@ func (s *Server) renderError(w http.ResponseWriter, r *http.Request, code int, t
 
 // ServeHTTP implements the http.Handler interface
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Add global Server header
+	w.Header().Set("Server", "Titan Web Server")
+
 	// 0. Intercept API and Admin requests
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		s.handleAPI(w, r)
@@ -384,11 +419,35 @@ func (s *Server) Start() error {
 						}
 						return nil, errors.New("certificate not found for domain")
 					},
+					NextProtos: []string{"h3", "http/1.1"}, // Advertise HTTP/3 support
 				}
 
-				server := &http.Server{
+				// Start HTTP/3 (QUIC) Server
+				quicServer := &http3.Server{
 					Addr:      s.Config.HTTPSPort,
 					Handler:   s,
+					TLSConfig: tlsConfig,
+				}
+				go func() {
+					fmt.Printf("Starting HTTP/3 (QUIC) server on %s\n", s.Config.HTTPSPort)
+					if err := quicServer.ListenAndServe(); err != nil {
+						fmt.Printf("HTTP/3 server error: %v\n", err)
+					}
+				}()
+
+				// Start HTTPS (TCP) Server
+				server := &http.Server{
+					Addr:      s.Config.HTTPSPort,
+					Handler:   http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						// Advertise HTTP/3 via Alt-Svc header
+						// Port needs to be extracted from HTTPSPort string (e.g. ":8443" -> "8443")
+						port := s.Config.HTTPSPort
+						if strings.HasPrefix(port, ":") {
+							port = port[1:]
+						}
+						w.Header().Set("Alt-Svc", fmt.Sprintf(`h3=":%s"; ma=2592000`, port))
+						s.ServeHTTP(w, r)
+					}),
 					TLSConfig: tlsConfig,
 				}
 
