@@ -227,8 +227,6 @@ jobs:
         
     - name: Create Release & Tag 🚀
       uses: softprops/action-gh-release@v2
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         tag_name: ${{ needs.build.outputs.tag_name }}
         name: Release ${{ needs.build.outputs.tag_name }}
