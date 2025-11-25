@@ -64,6 +64,7 @@ type Site struct {
 	Domain string  `json:"domain"`
 	Routes []Route `json:"routes"`
 	SSL    *SSL    `json:"ssl,omitempty"`
+	WAF    *WAF    `json:"waf,omitempty"`
 }
 
 // SSL represents SSL configuration
@@ -75,6 +76,12 @@ type SSL struct {
 	Provider     string      `json:"provider"`      // "letsencrypt", "selfsigned", "manual"
 	HSTS         *HSTSConfig `json:"hsts,omitempty"` // HSTS Configuration
 	OCSPStapling bool        `json:"ocsp_stapling"`  // Enable OCSP Stapling
+}
+
+// WAF represents the Web Application Firewall configuration
+type WAF struct {
+	Enabled bool     `json:"enabled"`
+	Rules   []string `json:"rules"` // Paths to rule files
 }
 
 // HSTSConfig represents HTTP Strict Transport Security settings

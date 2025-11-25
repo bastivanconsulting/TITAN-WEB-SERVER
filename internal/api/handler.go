@@ -89,6 +89,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// HSTS Management
+	if path == "/api/hsts/toggle" && r.Method == http.MethodPost {
+		h.handleToggleHSTS(w, r)
+		return
+	}
+
+	// WAF Management
+	if path == "/api/waf/toggle" && r.Method == http.MethodPost {
+		h.handleToggleWAF(w, r)
+		return
+	}
+
 	http.NotFound(w, r)
 }
 
@@ -352,6 +364,83 @@ func (h *Handler) handleToggleSSL(w http.ResponseWriter, r *http.Request) {
 					cfg.Sites[i].SSL.Email = req.Email
 				}
 			}
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		http.Error(w, "Domain not found", http.StatusNotFound)
+		return
+	}
+
+	if err := h.Manager.UpdateConfig(cfg); err != nil {
+		http.Error(w, "Failed to update config", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status": "updated"}`))
+}
+
+func (h *Handler) handleToggleHSTS(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Domain  string `json:"domain"`
+		Enabled bool   `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	cfg := h.Manager.GetConfig()
+	found := false
+	for i, site := range cfg.Sites {
+		if site.Domain == req.Domain {
+			if cfg.Sites[i].SSL == nil {
+				cfg.Sites[i].SSL = &config.SSL{}
+			}
+			if cfg.Sites[i].SSL.HSTS == nil {
+				cfg.Sites[i].SSL.HSTS = &config.HSTSConfig{}
+			}
+			cfg.Sites[i].SSL.HSTS.Enabled = req.Enabled
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		http.Error(w, "Domain not found", http.StatusNotFound)
+		return
+	}
+
+	if err := h.Manager.UpdateConfig(cfg); err != nil {
+		http.Error(w, "Failed to update config", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status": "updated"}`))
+}
+
+func (h *Handler) handleToggleWAF(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Domain  string `json:"domain"`
+		Enabled bool   `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	cfg := h.Manager.GetConfig()
+	found := false
+	for i, site := range cfg.Sites {
+		if site.Domain == req.Domain {
+			if cfg.Sites[i].WAF == nil {
+				cfg.Sites[i].WAF = &config.WAF{}
+			}
+			cfg.Sites[i].WAF.Enabled = req.Enabled
 			found = true
 			break
 		}

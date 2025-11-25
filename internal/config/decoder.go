@@ -150,6 +150,18 @@ func decodeSiteBlock(b parser.Block) (*Site, error) {
 					}
 				}
 			}
+		case "waf":
+			if site.WAF == nil {
+				site.WAF = &WAF{}
+			}
+			for _, d := range subBlock.Directives {
+				switch d.Name {
+				case "enabled":
+					site.WAF.Enabled = d.Parameters[0] == "on"
+				case "rules":
+					site.WAF.Rules = append(site.WAF.Rules, d.Parameters...)
+				}
+			}
 		}
 	}
 	return site, nil

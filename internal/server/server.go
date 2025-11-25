@@ -27,6 +27,7 @@ import (
 	"titan-web-server/internal/config"
 	"titan-web-server/internal/proxy"
 	"titan-web-server/internal/tlsutil"
+	"titan-web-server/internal/waf"
 )
 
 //go:embed templates/error.html
@@ -57,6 +58,7 @@ type Server struct {
 	ClusterNode   *cluster.Node // Optional cluster node
 	phpHandlers   map[string]http.Handler
 	proxyHandlers map[string]http.Handler
+	wafs          map[string]*waf.WAF
 }
 
 // NewServer creates a new server instance
@@ -104,6 +106,7 @@ func NewServer(cfg *config.Config, configPath string) *Server {
 		Logger:        logger,
 		phpHandlers:   make(map[string]http.Handler),
 		proxyHandlers: make(map[string]http.Handler),
+		wafs:          make(map[string]*waf.WAF),
 	}
 
 	// Initialize API Handler (srv implements ConfigManager interface implicitly)
@@ -238,6 +241,9 @@ func (s *Server) ApplyConfig(cfg *config.Config) error {
 	if err := s.initHandlersLocked(); err != nil {
 		return err
 	}
+	if err := s.initWAFsLocked(); err != nil {
+		return err
+	}
 
 	// Persist configuration to disk
 	return s.saveConfigLocked()
@@ -258,6 +264,20 @@ func (s *Server) saveConfigLocked() error {
 	content := config.EncodeToConf(s.Config)
 	if _, err := file.WriteString(content); err != nil {
 		return fmt.Errorf("failed to write config: %w", err)
+	}
+	return nil
+}
+
+func (s *Server) initWAFsLocked() error {
+	s.wafs = make(map[string]*waf.WAF)
+	for _, site := range s.Config.Sites {
+		if site.WAF != nil && site.WAF.Enabled {
+			w, err := waf.New(site.WAF.Rules)
+			if err != nil {
+				return fmt.Errorf("error initializing WAF for %s: %v", site.Domain, err)
+			}
+			s.wafs[site.Domain] = w
+		}
 	}
 	return nil
 }
@@ -467,6 +487,20 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// WAF Check
+	s.mu.RLock()
+	waf, wafExists := s.wafs[host]
+	s.mu.RUnlock()
+
+	if wafExists {
+		if waf.CheckRequest(r) {
+			s.renderError(rw, r, http.StatusForbidden, "Forbidden", "Your request has been blocked by the firewall.")
+			if logger != nil {
+				logger.AccessLog(matchedSite.Domain, r.Method, r.URL.Path, r.RemoteAddr, http.StatusForbidden, time.Since(start))
+			}
+			return
+		}
+	}
 	if matchedSite == nil {
 		s.renderError(rw, r, 404, "Site non trouvé", "Le domaine demandé n'est pas configuré sur ce serveur.")
 		// Log 404 for unknown host

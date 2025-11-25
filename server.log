@@ -1,0 +1,8 @@
+Cache configuration missing. Caching disabled.
+Warning: Failed to create log directory: mkdir /var/log/titan/: permission denied
+ACME/Let's Encrypt enabled for: [www.example.com] with email webmaster@example.com
+Security: FIPS Compliance constraints enabled (TLS 1.2+, Strong Ciphers).
+Starting HTTPS server on :8443 (SNI Enabled)
+Starting HTTP server on :8080
+Starting HTTP/3 (QUIC) server on :8443
+2025/11/25 06:00:10 failed to sufficiently increase receive buffer size (was: 208 kiB, wanted: 7168 kiB, got: 416 kiB). See https://github.com/quic-go/quic-go/wiki/UDP-Buffer-Sizes for details.
