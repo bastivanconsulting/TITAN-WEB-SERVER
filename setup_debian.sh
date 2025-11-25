@@ -94,10 +94,23 @@ else
 fi
 
 # Permissions
-log "Application des permissions pour l'utilisateur $USER..."
-chown -R $USER:$USER "$CONFIG_DIR"
+log "Application des permissions..."
 chown -R $USER:$USER "$LOG_DIR"
 chown -R $USER:$USER "$RAFT_DIR"
+
+# Permissions de configuration: root propriétaire, www-data peut lire
+log "Permissions de configuration: root propriétaire, www-data peut lire..."
+chown -R root:$USER "$CONFIG_DIR"
+find "$CONFIG_DIR" -type d -exec chmod 750 {} \;
+find "$CONFIG_DIR" -type f -exec chmod 640 {} \;
+
+# Permissions des certificats: www-data doit pouvoir écrire pour Let's Encrypt
+log "Permissions des certificats: www-data doit pouvoir écrire pour Let's Encrypt..."
+CERTS_DIR="$CONFIG_DIR/certs"
+chown -R $USER:$USER "$CERTS_DIR"
+find "$CERTS_DIR" -type d -exec chmod 750 {} \;
+find "$CERTS_DIR" -type f -exec chmod 640 {} \;
+
 
 # Systemd
 log "Création du service Systemd..."
