@@ -8,7 +8,7 @@ on:
   pull_request:
     branches: [ "main" ]
 
-# ⚠️ PERMISSIONS CRITIQUES pour la Release
+# Permet au workflow de créer des Releases et des Tags
 permissions:
   contents: write
 
@@ -39,11 +39,9 @@ jobs:
     - name: Generate Auto Version
       id: get_version
       run: |
-        # Génère une version unique basée sur le numéro de build GitHub
-        # Ex: v0.1.42
+        # Génération : v0.1.{BuildNumber}
         AUTO_TAG="v0.1.${{ github.run_number }}"
         echo "tag=$AUTO_TAG" >> $GITHUB_OUTPUT
-        echo "Generated version: $AUTO_TAG"
         
     - name: Upload Build Artifact
       uses: actions/upload-artifact@v4
@@ -57,12 +55,11 @@ jobs:
   package:
     runs-on: ubuntu-latest
     needs: build
-    # Exécuter uniquement sur la branche main
     if: success() && github.ref == 'refs/heads/main'
     steps:
     - uses: actions/checkout@v4
     
-    # Configuration de Go pour installer nFPM
+    # Nécessaire pour installer nFPM
     - name: Set up Go 1.24.3
       uses: actions/setup-go@v5
       with:
@@ -78,7 +75,6 @@ jobs:
       run: |
         mkdir -p scripts
         
-        # Service Systemd
         cat <<EOF > scripts/titan-server.service
         [Unit]
         Description=Titan Web Server
@@ -97,7 +93,6 @@ jobs:
         WantedBy=multi-user.target
         EOF
 
-        # Script Post-Installation
         cat <<EOF > scripts/postinst.sh
         #!/bin/bash
         if ! getent group titan > /dev/null; then
@@ -113,7 +108,6 @@ jobs:
         systemctl enable titan-server.service
         EOF
 
-        # Script Pré-Suppression
         cat <<EOF > scripts/prerm.sh
         #!/bin/bash
         if [ "\$1" = "remove" ]; then
@@ -125,7 +119,6 @@ jobs:
 
     - name: Create nfpm configuration
       run: |
-        # Nettoyer le 'v' pour la version du paquet (Linux préfère 0.1.42 à v0.1.42)
         TAG_NAME=$(echo ${{ needs.build.outputs.tag_name }} | sed 's/^v//')
         
         cat <<EOF > nfpm.yaml
@@ -145,7 +138,7 @@ jobs:
               mode: 0755
           - src: ./titan-server.conf 
             dst: /etc/titan-server/titan-server.conf
-            type: config
+            type: config  # CORRECTION ICI (au lieu de config: true dans file_info)
             file_info:
               mode: 0644
           - src: ./scripts/titan-server.service
@@ -156,13 +149,13 @@ jobs:
             type: dir 
             file_info:
               mode: 0755
-              owner: titan
+              owner: titan  # CORRECTION ICI (au lieu de user: titan)
               group: titan
           - dst: /var/lib/titan-server
             type: dir
             file_info:
               mode: 0755
-              owner: titan
+              owner: titan  # CORRECTION ICI (au lieu de user: titan)
               group: titan
         scripts:
           postinstall: ./scripts/postinst.sh
@@ -171,10 +164,45 @@ jobs:
 
     - name: Install and Run nFPM 📦
       run: |
-        # Installation de nFPM via Go
         go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
-        
         mkdir -p packages
         
         echo "Building DEB..."
-        nfpm package --config nfpm.yaml --pack
+        nfpm package --config nfpm.yaml --packager deb --target packages/
+        
+        echo "Building RPM..."
+        nfpm package --config nfpm.yaml --packager rpm --target packages/
+        
+        ls -l packages/
+        
+    - name: Upload Packages Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: titan-web-server-packages
+        path: packages/
+
+# ----------------------------------------------------------------------------------
+
+  # JOB 3: Release Automatique
+  release:
+    runs-on: ubuntu-latest
+    needs: [build, package]
+    if: success() && github.ref == 'refs/heads/main'
+    steps:
+    - uses: actions/checkout@v4
+      
+    - name: Download Packages
+      uses: actions/download-artifact@v4
+      with:
+        name: titan-web-server-packages
+        path: packages/
+        
+    - name: Create Release & Tag 🚀
+      uses: softprops/action-gh-release@v2
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ needs.build.outputs.tag_name }}
+        name: Release ${{ needs.build.outputs.tag_name }}
+        body: "Automatic release of Titan Web Server packages (.deb, .rpm)."
+        files: packages/*
