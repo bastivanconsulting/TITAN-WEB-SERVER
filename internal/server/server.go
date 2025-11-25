@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -424,6 +425,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rw := NewResponseWriter(w)
 
 	// 0. Intercept API and Admin requests
+	// Note: Internal API for cluster sync bypasses normal auth for performance,
+	// but relies on the shared API key.
+	if strings.HasPrefix(r.URL.Path, "/api/internal/certs/") {
+		s.handleCertSync(rw, r)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		s.handleAPI(rw, r)
 		return
@@ -709,31 +716,48 @@ func (s *Server) Start() error {
 			}
 		}
 
+		if acmeEmail == "" {
+			log.Fatalf("ACME/Let's Encrypt is enabled but no email address is provided in any site configuration. This is required by Let's Encrypt TOS.")
+		}
+
 		m = &autocert.Manager{
 			Cache:      autocert.DirCache(certDir),
 			Prompt:     autocert.AcceptTOS,
 			HostPolicy: autocert.HostWhitelist(acmeDomains...),
 			Email:      acmeEmail,
 		}
-		if acmeEmail != "" {
-			fmt.Printf("ACME/Let's Encrypt enabled for: %v with email %s\n", acmeDomains, acmeEmail)
-		} else {
-			fmt.Printf("ACME/Let's Encrypt enabled for: %v (no email provided)\n", acmeDomains)
-		}
+		log.Printf("ACME/Let's Encrypt enabled for domains: %v (Email: %s)", acmeDomains, acmeEmail)
 	}
 
-	// Start HTTP Server if configured
+	// Start HTTP Server
+	httpPort80Configured := s.Config.HTTPPort == ":80" || s.Config.HTTPPort == "80"
+
+	// If user configured an HTTP port, start that server.
 	if s.Config.HTTPPort != "" {
 		go func() {
-			fmt.Printf("Starting HTTP server on %s\n", s.Config.HTTPPort)
+			log.Printf("Starting HTTP server on %s\n", s.Config.HTTPPort)
 			var handler http.Handler = s
 			if m != nil {
-				// Wrap with ACME handler to intercept challenges
+				// If the user's server is on port 80, autocert can use it.
+				// Otherwise, autocert will need its own server (started below).
 				handler = m.HTTPHandler(s)
 			}
-
 			if err := http.ListenAndServe(s.Config.HTTPPort, handler); err != nil {
-				errChan <- fmt.Errorf("HTTP server failed: %w", err)
+				errChan <- fmt.Errorf("HTTP server on %s failed: %w", s.Config.HTTPPort, err)
+			}
+		}()
+	}
+
+	// If ACME is enabled and no server is running on port 80, start one.
+	// This is required for the HTTP-01 challenge.
+	if m != nil && !httpPort80Configured {
+		go func() {
+			log.Println("Starting dedicated ACME challenge server on :80")
+			// m.HTTPHandler(nil) handles challenges and redirects other HTTP -> HTTPS
+			err := http.ListenAndServe(":80", m.HTTPHandler(nil))
+			if err != nil {
+				// Don't fail fatally, but log a clear warning.
+				log.Printf("WARNING: Could not start ACME challenge server on port 80: %v. Let's Encrypt may fail.", err)
 			}
 		}()
 	}
@@ -946,4 +970,35 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+}
+
+func (s *Server) handleCertSync(w http.ResponseWriter, r *http.Request) {
+	s.mu.RLock()
+	node := s.ClusterNode
+	apiKey := s.Config.AdminAPIKey
+	s.mu.RUnlock()
+
+	if node == nil {
+		http.Error(w, "Clustering not enabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Authenticate request
+	if r.Header.Get("X-API-Key") != apiKey {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	leaderAddr := string(node.Raft.Leader())
+
+	switch r.URL.Path {
+	case cluster.SyncEndpoint:
+		// This is a follower receiving a manifest from the leader
+		node.HandleSyncRequest(w, r, leaderAddr, apiKey)
+	case cluster.FileEndpoint:
+		// This is the leader serving a file to a follower
+		node.HandleFileRequest(w, r)
+	default:
+		http.NotFound(w, r)
+	}
 }

@@ -3,7 +3,6 @@ package cluster
 import (
 	"encoding/json"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
 	"os"
@@ -104,7 +103,7 @@ func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 
 // Restore restores the FSM from a snapshot
 func (f *FSM) Restore(rc io.ReadCloser) error {
-	content, err := ioutil.ReadAll(rc)
+	content, err := io.ReadAll(rc)
 	if err != nil {
 		return err
 	}
@@ -125,7 +124,7 @@ func (f *FSM) Restore(rc io.ReadCloser) error {
 	f.mu.Unlock()
 
 	// Write to disk
-	return ioutil.WriteFile(f.configPath, content, 0644)
+	return os.WriteFile(f.configPath, content, 0644)
 }
 
 type ConfigSnapshot struct {
