@@ -4,6 +4,7 @@ import (
 	"flag"
 	"log"
 	"os"
+	"runtime"
 
 	"titan-web-server/internal/cluster"
 	"titan-web-server/internal/config"
@@ -43,6 +44,14 @@ func main() {
 			log.Fatalf("Invalid configuration: %v", err)
 			os.Exit(1)
 		}
+	}
+
+	// Set the number of threads for the runtime
+	if cfg.MaxThreads > 0 {
+		runtime.GOMAXPROCS(cfg.MaxThreads)
+		log.Printf("GOMAXPROCS set to %d", cfg.MaxThreads)
+	} else {
+		log.Printf("GOMAXPROCS left at default value: %d", runtime.GOMAXPROCS(0))
 	}
 
 	srv := server.NewServer(cfg, *configFile, *debug)

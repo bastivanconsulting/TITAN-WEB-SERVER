@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"strconv"
 	"titan-web-server/internal/config/parser"
 )
@@ -16,6 +17,14 @@ func DecodeAST(ast *parser.ConfigAST) (*Config, error) {
 			if len(d.Parameters) > 0 { cfg.HTTPPort = d.Parameters[0] }
 		case "https_port":
 			if len(d.Parameters) > 0 { cfg.HTTPSPort = d.Parameters[0] }
+		case "max_threads":
+			if len(d.Parameters) > 0 {
+				val, err := strconv.Atoi(d.Parameters[0])
+				if err != nil {
+					return nil, fmt.Errorf("invalid value for max_threads: not a valid integer: %s", d.Parameters[0])
+				}
+				cfg.MaxThreads = val
+			}
 		case "admin_api_key":
 			if len(d.Parameters) > 0 { cfg.AdminAPIKey = d.Parameters[0] }
 		case "admin_user":
