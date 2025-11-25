@@ -146,6 +146,62 @@ Pour chaque site, vous pouvez avoir plusieurs chemins (routes).
     *   `proxy_target` : L'adresse de l'autre application (ex: `http://localhost:3000`).
     *   **Compatible WebSocket** : Titan gère automatiquement les connexions WebSocket pour les applications en temps réel.
 
+### Load Balancing (Répartition de charge)
+
+Titan intègre un système de répartition de charge (Load Balancing) simple et efficace. Cela permet de distribuer le trafic entre plusieurs serveurs pour améliorer les performances et la fiabilité.
+
+**Fonctionnement :**
+L'algorithme utilisé est le **Round-Robin**. Titan envoie chaque nouvelle requête au serveur suivant dans la liste.
+*   Requête 1 -> Serveur A
+*   Requête 2 -> Serveur B
+*   Requête 3 -> Serveur A
+*   ... et ainsi de suite.
+
+**Configuration :**
+Pour utiliser le load balancing, remplacez `proxy_target` par `upstreams` (une liste d'adresses) dans votre configuration :
+
+```json
+{
+    "path": "/api",
+    "type": "proxy",
+    "upstreams": [
+        "http://localhost:3001",
+        "http://localhost:3002",
+        "http://localhost:3003"
+    ]
+}
+```
+
+---
+
+## Gestion SSL/TLS (HTTPS)
+
+Titan Web Server simplifie la gestion des certificats SSL pour garantir que votre site est toujours sécurisé (cadenas vert).
+
+### 1. Certificats Automatiques (Let's Encrypt)
+C'est la méthode recommandée pour les sites publics. Titan contacte automatiquement Let's Encrypt pour obtenir et renouveler vos certificats gratuitement.
+
+*   **Configuration** : Mettez `"provider": "letsencrypt"` et renseignez votre `email`.
+*   **Important** : Le port 80 doit être accessible depuis internet pour la validation.
+
+### 2. Certificats Manuels
+Si vous avez acheté un certificat ou si vous utilisez une autorité de certification interne.
+
+*   **Configuration** :
+    *   `"provider": "manual"`
+    *   `"cert_file"`: Chemin vers le fichier `.crt` ou `.pem`.
+    *   `"key_file"`: Chemin vers le fichier `.key`.
+
+### 3. Certificats Auto-signés (Mode par défaut)
+Si vous ne configurez rien, Titan génère automatiquement un certificat auto-signé (`server.crt` et `server.key`) au démarrage.
+*   **Usage** : Idéal pour le développement local (`localhost`).
+*   **Navigateur** : Vous verrez une alerte de sécurité (car le certificat n'est pas validé par une autorité connue), c'est normal en local.
+
+### Technologies Avancées
+*   **HTTP/3 (QUIC)** : Titan active automatiquement HTTP/3 sur le port UDP correspondant à votre port HTTPS. Cela réduit la latence pour les utilisateurs ayant une mauvaise connexion.
+*   **HSTS** : Si activé dans la config, force les navigateurs à se souvenir de ne parler qu'en HTTPS avec votre serveur.
+*   **OCSP Stapling** : Améliore la confidentialité en évitant que le navigateur ne contacte l'autorité de certification à chaque visite.
+
 ---
 
 ## Logs et Surveillance (ISO 27001)
