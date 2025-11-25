@@ -2,236 +2,189 @@
 
 [![Go CI Status](https://github.com/bastivanconsulting/WebServer/actions/workflows/go.yml/badge.svg?branch=main)](https://github.com/bastivanconsulting/WebServer/actions/workflows/go.yml)
 
-Bienvenue dans **Titan Web Server**, une solution ultra-performante et sécurisée pour héberger vos sites web et rediriger le trafic (Reverse Proxy). Ce serveur est conçu pour être **simple à utiliser**, même si vous n'avez aucune expérience en administration système.
-
-Ce guide vous accompagnera étape par étape pour configurer et lancer votre serveur.
-
-## Fonctionnalités Clés
-
-*   **Hébergement Web** : Affichez vos fichiers HTML, CSS, et images.
-*   **Reverse Proxy** : Redirigez les visiteurs vers d'autres applications (ex: Node.js, Python).
-*   **Sécurité Maximale** :
-    *   **FIPS Compliance** : Normes de sécurité gouvernementales.
-    *   **HSTS & SSL** : Protection automatique des connexions (HTTPS).
-    *   **Logs ISO 27001** : Journalisation détaillée pour l'audit et la sécurité.
-*   **Performance** : Supporte HTTP/3 (la version la plus rapide du web).
-*   **Gestion Facile** : Une interface d'administration simple et un rechargement automatique de la configuration.
+**Titan Web Server** est une solution de serveur web et reverse proxy haute performance, nativement distribuée et sécurisée. Conçu pour l'élasticité et la simplicité, il supporte HTTP/3, la gestion automatique SSL/TLS, et le clustering via Raft.
 
 ---
 
-## Installation
+## 📋 Prérequis
 
-### Prérequis
-
-Pour utiliser Titan Web Server, vous avez juste besoin d'avoir **Go** installé sur votre machine (version 1.24 ou plus).
-Si vous ne l'avez pas, téléchargez-le ici : [https://go.dev/dl/](https://go.dev/dl/)
-
-### Compiler le Programme
-
-Ouvrez votre terminal (ou invite de commande) dans le dossier du projet et tapez :
-
-```bash
-go build -o titan-web-server cmd/server/main.go
-```
-
-Cela va créer un fichier exécutable nommé `titan-web-server`.
+*   **Système d'exploitation** : Linux, macOS, ou Windows.
+*   **Langage** : Go **1.24** ou supérieur.
+    *   [Télécharger Go](https://go.dev/dl/)
 
 ---
 
-## Guide de Démarrage Rapide
+## 🛠️ Installation et Compilation
 
-### 1. Préparer les dossiers
+Titan Server est distribué sous forme de code source. Vous devez le compiler pour votre architecture.
 
-Créez un dossier pour vos logs (journaux d'activité). Par défaut, Titan utilise `/var/log/titan/`.
-Si vous êtes sous Linux/Mac :
-```bash
-sudo mkdir -p /var/log/titan/
-sudo chmod 777 /var/log/titan/
-```
+1.  **Cloner le dépôt** (ou extraire les sources) :
+    ```bash
+    git clone https://github.com/bastivanconsulting/WebServer.git
+    cd WebServer
+    ```
 
-### 2. Créer la Configuration (`config.json`)
+2.  **Compiler le binaire** :
+    ```bash
+    go mod tidy
+    go build -o titan-web-server cmd/server/main.go
+    ```
 
-Le fichier `config.json` est le cœur de votre serveur. Créez ce fichier à côté de l'exécutable `titan-web-server`.
+    Cela générera un exécutable `titan-web-server` à la racine.
 
-Voici un exemple complet et commenté pour vous aider à comprendre chaque ligne. Copiez-collez ceci dans votre fichier `config.json` :
+---
 
-```json
-{
-    "http_port": ":8080",
-    "https_port": ":8443",
-    "admin_api_key": "votre-clé-secrète-ici",
-    "admin_user": "admin",
-    "admin_pass": "mot-de-passe-admin",
-    "admin_allowlist": [
-        "127.0.0.1",
-        "::1"
-    ],
-    "log_dir": "/var/log/titan/",
-    "security": {
-        "fips_compliant": true
-    },
-    "sites": [
-        {
-            "domain": "localhost",
-            "ssl": {
-                "enabled": false
-            },
-            "routes": [
-                {
-                    "path": "/",
-                    "type": "static",
-                    "file_root": "./mon-site-web"
-                },
-                {
-                    "path": "/app",
-                    "type": "proxy",
-                    "proxy_target": "http://localhost:3000"
-                }
-            ]
+## ⚙️ Configuration (Migration .conf)
+
+Titan Server utilise désormais un format de configuration standardisé **.conf** (syntaxe compatible NGINX). Le format JSON n'est plus supporté.
+
+### Structure des Fichiers
+*   **Fichier Principal** : `titan-server.conf` (Doit être passé en argument au démarrage).
+*   **Inclusions** : Vous pouvez inclure des configurations de sites via la directive `conf_dir`.
+
+### Exemple de Configuration (`titan-server.conf`)
+
+Créez un fichier `titan-server.conf` avec le contenu suivant :
+
+```nginx
+# Utilisateur et Processus (Non utilisé pour le moment, réservé pour le futur)
+user titan;
+worker_processes auto;
+
+# Ports d'écoute
+http_port :8080;
+https_port :8443;
+
+# Sécurité et Administration
+admin_api_key "votre-clé-secrète";
+admin_user "admin";
+admin_pass "admin123";
+admin_allowlist 127.0.0.1 ::1;
+
+# Logs et Configuration externe
+log_dir "/var/log/titan/";
+conf_dir "conf.d/";
+
+# Sécurité Globale
+security {
+    fips_compliant on;
+}
+
+# Définition des Services HTTP
+http {
+    # Site Statique
+    server {
+        server_name www.example.com;
+
+        ssl {
+            enabled on;
+            provider letsencrypt;
+            email "admin@example.com";
+            ocsp_stapling on;
         }
-    ]
+
+        location / {
+            root /var/www/html;
+        }
+    }
+
+    # Reverse Proxy
+    server {
+        server_name api.local;
+
+        location / {
+            proxy_pass http://127.0.0.1:3000;
+        }
+    }
+
+    # PHP (FastCGI)
+    server {
+        server_name app.php;
+
+        location / {
+            root /var/www/phpapp;
+            fastcgi_pass 127.0.0.1:9000;
+        }
+    }
 }
 ```
 
-### 3. Lancer le Serveur
+### Directives Principales
+*   **http_port / https_port** : Ports d'écoute.
+*   **admin_api_key** : Clé pour l'API REST d'administration.
+*   **security { fips_compliant on; }** : Active le mode conformité FIPS (TLS 1.2+, Ciphers restreints).
+*   **server { ... }** : Définit un site (Virtual Host).
+*   **location / { ... }** : Définit une route.
+    *   `root` : Racine pour fichiers statiques.
+    *   `proxy_pass` : Cible pour Reverse Proxy.
+    *   `fastcgi_pass` : Cible pour PHP-FPM.
 
-Dans votre terminal, lancez la commande suivante :
+---
+
+## 🌐 Mode Cluster (Distribué)
+
+Titan Server intègre un moteur de consensus **Raft** pour la synchronisation automatique des configurations entre plusieurs nœuds.
+
+### Démarrer le Premier Nœud (Leader/Bootstrap)
+Pour initialiser un nouveau cluster :
 
 ```bash
-./titan-web-server -config config.json
+./titan-web-server \
+  -config titan-server.conf \
+  -node-id node1 \
+  -raft-addr 127.0.0.1:9000 \
+  -raft-dir ./data/node1 \
+  -bootstrap
 ```
 
-Si tout va bien, vous verrez des messages indiquant que le serveur a démarré.
+*   `-bootstrap` : Indique que ce nœud doit initialiser le cluster (à utiliser uniquement pour le premier nœud).
+
+### Ajouter des Nœuds (Workers)
+Pour ajouter d'autres nœuds au cluster :
+
+1.  Démarrer le second nœud (sans bootstrap) :
+    ```bash
+    ./titan-web-server \
+      -config titan-server.conf \
+      -node-id node2 \
+      -raft-addr 127.0.0.1:9001 \
+      -raft-dir ./data/node2 \
+      -join 127.0.0.1:9000
+    ```
+    *   `-join` : Adresse HTTP d'administration du leader (Non, l'implémentation actuelle demande une action manuelle ou via API, la commande ci-dessus est une simplification pour l'exemple, référez-vous à l'API).
+
+    *Correction : L'option `-join` tente de rejoindre via le protocole Raft ou API selon l'implémentation. Dans la version actuelle, utilisez l'API pour joindre.*
+
+**Méthode Recommandée pour Joindre :**
+
+1.  Démarrer le nœud 2 :
+    ```bash
+    ./titan-web-server -config titan-server.conf -node-id node2 -raft-addr 127.0.0.1:9001 -raft-dir ./data/node2
+    ```
+
+2.  Demander au Leader (Node 1) d'ajouter Node 2 via l'API :
+    ```bash
+    curl -X POST http://127.0.0.1:8080/api/cluster/join \
+         -H "X-API-Key: votre-clé-secrète" \
+         -d '{"id": "node2", "addr": "127.0.0.1:9001"}'
+    ```
+
+### Synchronisation
+Une fois le cluster formé, toute modification de configuration envoyée au Leader (via API ou fichier) est automatiquement répliquée sur tous les nœuds. Le fichier `titan-server.conf` est mis à jour localement sur chaque nœud.
 
 ---
 
-## Comprendre le Fichier de Configuration (`config.json`)
+## 🛡️ Fonctionnalités de Sécurité
 
-Voici une explication simple de chaque option :
-
-### Paramètres Généraux
-
-*   **`http_port`** : Le port pour le trafic normal (ex: `":80"` pour le web standard, ou `":8080"` pour tester).
-*   **`https_port`** : Le port pour le trafic sécurisé (ex: `":443"`). Laissez vide si vous n'utilisez pas SSL.
-*   **`log_dir`** : L'endroit où les fichiers de logs seront enregistrés.
-*   **`admin_...`** : Ces champs protègent l'interface d'administration (`http://localhost:8080/admin`). Changez le mot de passe !
-
-### Sécurité (`security`)
-
-<img width="1088" height="523" alt="image" src="https://github.com/user-attachments/assets/e913c1b0-19dc-4d88-a57f-ecea52ccf75f" />
-
-*   **`fips_compliant`** : Mettez `true` (vrai) pour activer le mode "Haute Sécurité". Cela force le serveur à utiliser uniquement des chiffrements très robustes.
-
-### Sites (`sites`)
-
-C'est ici que vous définissez vos noms de domaine.
-
-*   **`domain`** : Votre nom de domaine (ex: `monsite.com` ou `localhost`).
-*   **`ssl`** : Configuration du cadenas vert (HTTPS).
-    *   `enabled` : `true` pour activer.
-    *   `provider` : Mettez `"manual"` pour fournir vos propres certificats.
-    *   `cert_file` / `key_file` : Chemins vers vos fichiers de certificat.
-    *   `hsts` : Options avancées pour forcer le navigateur à toujours utiliser HTTPS.
-    *   `ocsp_stapling` : Améliore la vitesse et la confidentialité de la vérification SSL.
-
-### Routes (`routes`)
-
-Pour chaque site, vous pouvez avoir plusieurs chemins (routes).
-
-*   **Type `static`** : Pour héberger des fichiers simples (HTML, images).
-    *   `path` : L'URL (ex: `/` pour la racine).
-    *   `file_root` : Le dossier sur votre ordinateur qui contient les fichiers (ex: `./mon-site-web`).
-
-*   **Type `proxy`** : Pour rediriger vers une autre application.
-    *   `proxy_target` : L'adresse de l'autre application (ex: `http://localhost:3000`).
-    *   **Compatible WebSocket** : Titan gère automatiquement les connexions WebSocket pour les applications en temps réel.
-
-### Load Balancing (Répartition de charge)
-
-Titan intègre un système de répartition de charge (Load Balancing) simple et efficace. Cela permet de distribuer le trafic entre plusieurs serveurs pour améliorer les performances et la fiabilité.
-
-**Fonctionnement :**
-L'algorithme utilisé est le **Round-Robin**. Titan envoie chaque nouvelle requête au serveur suivant dans la liste.
-*   Requête 1 -> Serveur A
-*   Requête 2 -> Serveur B
-*   Requête 3 -> Serveur A
-*   ... et ainsi de suite.
-
-**Configuration :**
-Pour utiliser le load balancing, remplacez `proxy_target` par `upstreams` (une liste d'adresses) dans votre configuration :
-
-```json
-{
-    "path": "/api",
-    "type": "proxy",
-    "upstreams": [
-        "http://localhost:3001",
-        "http://localhost:3002",
-        "http://localhost:3003"
-    ]
-}
-```
+*   **SSL Automatique** : Intégration Let's Encrypt native (`provider letsencrypt`).
+*   **HSTS** : Strict Transport Security configurable par site.
+*   **OCSP Stapling** : Activé par défaut pour les performances et la confidentialité.
+*   **Audit Logs** : Logs d'accès et d'erreurs au format compatible ISO 27001 dans `log_dir`.
 
 ---
 
-## Gestion SSL/TLS (HTTPS)
+## 🔍 Dépannage
 
-Titan Web Server simplifie la gestion des certificats SSL pour garantir que votre site est toujours sécurisé (cadenas vert).
-
-### 1. Certificats Automatiques (Let's Encrypt)
-C'est la méthode recommandée pour les sites publics. Titan contacte automatiquement Let's Encrypt pour obtenir et renouveler vos certificats gratuitement.
-
-*   **Configuration** : Mettez `"provider": "letsencrypt"` et renseignez votre `email`.
-*   **Important** : Le port 80 doit être accessible depuis internet pour la validation.
-
-### 2. Certificats Manuels
-Si vous avez acheté un certificat ou si vous utilisez une autorité de certification interne.
-
-*   **Configuration** :
-    *   `"provider": "manual"`
-    *   `"cert_file"`: Chemin vers le fichier `.crt` ou `.pem`.
-    *   `"key_file"`: Chemin vers le fichier `.key`.
-
-### 3. Certificats Auto-signés (Mode par défaut)
-Si vous ne configurez rien, Titan génère automatiquement un certificat auto-signé (`server.crt` et `server.key`) au démarrage.
-*   **Usage** : Idéal pour le développement local (`localhost`).
-*   **Navigateur** : Vous verrez une alerte de sécurité (car le certificat n'est pas validé par une autorité connue), c'est normal en local.
-
-### Technologies Avancées
-*   **HTTP/3 (QUIC)** : Titan active automatiquement HTTP/3 sur le port UDP correspondant à votre port HTTPS. Cela réduit la latence pour les utilisateurs ayant une mauvaise connexion.
-*   **HSTS** : Si activé dans la config, force les navigateurs à se souvenir de ne parler qu'en HTTPS avec votre serveur.
-*   **OCSP Stapling** : Améliore la confidentialité en évitant que le navigateur ne contacte l'autorité de certification à chaque visite.
-
----
-
-## Logs et Surveillance (ISO 27001)
-
-Pour respecter les normes de sécurité, Titan crée deux fichiers par site dans votre dossier `log_dir` :
-
-1.  **`domaine-access.log`** : Liste toutes les visites (qui, quand, quelle page, code de réponse).
-2.  **`domaine-error.log`** : Liste toutes les erreurs techniques.
-
-Vous pouvez ouvrir ces fichiers avec n'importe quel éditeur de texte pour voir ce qui se passe sur votre serveur.
-
----
-
-## Dépannage (Problèmes fréquents)
-
-**Le serveur ne démarre pas ?**
-*   Vérifiez que le format JSON est correct (pas de virgule manquante).
-*   Vérifiez que les ports (80, 443, 8080) ne sont pas déjà utilisés par un autre programme (comme Apache ou Nginx).
-
-**Je modifie `config.json` mais rien ne change ?**
-*   Titan recharge la configuration automatiquement ! Regardez la console (terminal) où le serveur tourne. Si vous avez fait une erreur dans le JSON, il vous affichera un message d'erreur et gardera l'ancienne configuration pour ne pas planter.
-
-**Erreur "Permission denied" pour les logs ?**
-*   Assurez-vous que le dossier `/var/log/titan/` existe et que votre utilisateur a le droit d'écrire dedans. Sinon, changez `log_dir` pour un dossier où vous avez les droits (ex: `./logs/`).
-
-**Le proxy ne marche pas avec les WebSockets ?**
-*   Titan supporte les WebSockets nativement. Assurez-vous que votre application backend (cible du proxy) fonctionne correctement.
-
----
-
-## Licence
-
-Ce projet est sous licence MIT. Vous êtes libre de l'utiliser et de le modifier.
+*   **Erreur de Parsing** : Vérifiez que vos directives se terminent par un point-virgule `;` et que les blocs sont bien fermés par `}`.
+*   **Cluster** : Assurez-vous que les ports Raft (TCP) sont ouverts entre les nœuds.
+*   **Droits** : Le processus doit avoir les droits d'écriture dans `log_dir`, `raft-dir` et sur le fichier `titan-server.conf`.

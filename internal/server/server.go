@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"crypto/tls"
 	"embed"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
@@ -24,6 +23,7 @@ import (
 	"titan-web-server/internal/api"
 	"titan-web-server/internal/auth"
 	"titan-web-server/internal/cache"
+	"titan-web-server/internal/cluster"
 	"titan-web-server/internal/config"
 	"titan-web-server/internal/proxy"
 	"titan-web-server/internal/tlsutil"
@@ -54,6 +54,7 @@ type Server struct {
 	AuthProvider  auth.Provider
 	Cache         cache.Cache
 	Logger        *Logger
+	ClusterNode   *cluster.Node // Optional cluster node
 	phpHandlers   map[string]http.Handler
 	proxyHandlers map[string]http.Handler
 }
@@ -137,6 +138,52 @@ func (s *Server) GetConfig() *config.Config {
 
 // UpdateConfig updates the server configuration thread-safely
 func (s *Server) UpdateConfig(cfg *config.Config) error {
+	// If we are part of a cluster and this is a user request (not an internal Raft callback),
+	// we should route this through Raft.
+	// However, UpdateConfig is called by the Raft callback too.
+	// We need to distinguish or ensure we don't infinitely loop.
+	// The Raft callback calls s.UpdateConfig.
+	// The API handler calls s.UpdateConfig.
+
+	// Implementation:
+	// If ClusterNode is present, we should assume the API handler calling this wants to replicate.
+	// BUT `UpdateConfig` is also used by `main.go` for initial load and file watcher.
+	// We should separate "ProposeConfig" from "ApplyConfig".
+
+	// For now, let's handle the local update logic here.
+	// The API Handler should call ProposeConfig if cluster is active.
+	// But `UpdateConfig` is the method satisfying `ConfigManager` interface.
+
+	// Let's modify UpdateConfig to check if it should replicate.
+	// This is slightly messy. Better to have API handler check.
+	// But API handler doesn't know about ClusterNode directly (interface).
+	// So we handle it here.
+
+	s.mu.Lock()
+	clusterNode := s.ClusterNode
+	s.mu.Unlock()
+
+	// If we have a cluster node, we must replicate unless this update came FROM the cluster.
+	// But we don't know source here.
+	// Simpler: The API will call `UpdateConfig`.
+	// If `ClusterNode` is set, `UpdateConfig` should convert to text and call `node.ApplyConfigUpdate`.
+	// Then `ApplyConfigUpdate` will go through Raft, then `FSM.Apply` -> `callback` -> `s.applyConfigInternal`.
+
+	// To avoid loop, we need `applyConfigInternal` method.
+	// `UpdateConfig` will be the public entry point.
+
+	if clusterNode != nil {
+		// We are in a cluster. We must go through Raft.
+		confData := config.EncodeToConf(cfg)
+		return clusterNode.ApplyConfigUpdate([]byte(confData))
+	}
+
+	// Local update only
+	return s.ApplyConfig(cfg)
+}
+
+// ApplyConfig performs the actual update of the runtime state (internal use or via Raft)
+func (s *Server) ApplyConfig(cfg *config.Config) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -149,17 +196,14 @@ func (s *Server) UpdateConfig(cfg *config.Config) error {
 
 	// Update Auth Provider credentials if changed
 	if cfg.AdminUser != "" || cfg.AdminPass != "" {
-		// In a real scenario we'd update the provider instance or its state.
-		// Since SimpleProvider is immutable-ish in our usage, let's replace it.
-		// Note: This relies on AuthProvider being replaceable (interface).
 		user := cfg.AdminUser
 		pass := cfg.AdminPass
-		if user == "" { user = "admin" } // fallback or keep old?
+		if user == "" { user = "admin" }
 		if pass == "" { pass = "admin" }
 		s.AuthProvider = auth.NewSimpleProvider(user, pass)
 	}
 
-	// Sort routes by length (descending) to ensure specific paths are matched first
+	// Sort routes
 	for i := range cfg.Sites {
 		sort.Slice(cfg.Sites[i].Routes, func(a, b int) bool {
 			return len(cfg.Sites[i].Routes[a].Path) > len(cfg.Sites[i].Routes[b].Path)
@@ -169,8 +213,6 @@ func (s *Server) UpdateConfig(cfg *config.Config) error {
 	s.Config = cfg
 
 	// Re-initialize handlers
-	// Note: In a highly optimized real-world scenario, we would diff the config
-	// to avoid recreating existing connections, but full re-init is safer for correctness.
 	if err := s.initHandlersLocked(); err != nil {
 		return err
 	}
@@ -182,7 +224,7 @@ func (s *Server) UpdateConfig(cfg *config.Config) error {
 func (s *Server) saveConfigLocked() error {
 	path := s.ConfigPath
 	if path == "" {
-		path = "config.json"
+		path = "titan-server.conf"
 	}
 	file, err := os.Create(path)
 	if err != nil {
@@ -190,12 +232,62 @@ func (s *Server) saveConfigLocked() error {
 	}
 	defer file.Close()
 
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "    ")
-	if err := encoder.Encode(s.Config); err != nil {
-		return fmt.Errorf("failed to encode config: %w", err)
+	// Use the new encoder
+	content := config.EncodeToConf(s.Config)
+	if _, err := file.WriteString(content); err != nil {
+		return fmt.Errorf("failed to write config: %w", err)
 	}
 	return nil
+}
+
+// JoinCluster joins a new node to the cluster
+func (s *Server) JoinCluster(nodeID, addr string) error {
+	s.mu.RLock()
+	node := s.ClusterNode
+	s.mu.RUnlock()
+
+	if node == nil {
+		return errors.New("clustering not enabled on this node")
+	}
+
+	return node.Join(nodeID, addr)
+}
+
+// GetClusterStatus returns the status of the cluster
+func (s *Server) GetClusterStatus() map[string]interface{} {
+	s.mu.RLock()
+	node := s.ClusterNode
+	s.mu.RUnlock()
+
+	status := make(map[string]interface{})
+	if node == nil {
+		status["enabled"] = false
+		return status
+	}
+
+	status["enabled"] = true
+	status["leader"] = node.Raft.Leader()
+	status["state"] = node.Raft.State().String()
+
+	// We can get more stats from node.Raft.Stats()
+	stats := node.Raft.Stats()
+	status["stats"] = stats
+
+	// Get peers/servers
+	future := node.Raft.GetConfiguration()
+	if err := future.Error(); err == nil {
+		var servers []map[string]string
+		for _, srv := range future.Configuration().Servers {
+			servers = append(servers, map[string]string{
+				"id": string(srv.ID),
+				"address": string(srv.Address),
+				"suffrage": srv.Suffrage.String(),
+			})
+		}
+		status["servers"] = servers
+	}
+
+	return status
 }
 
 func (s *Server) initHandlersLocked() error {

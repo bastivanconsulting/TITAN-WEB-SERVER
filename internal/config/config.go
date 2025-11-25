@@ -1,11 +1,11 @@
 package config
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
+	"io/ioutil"
 	"path/filepath"
+	"titan-web-server/internal/config/parser"
 )
 
 // Config represents the global configuration
@@ -94,18 +94,22 @@ type Route struct {
 	FileRoot    string   `json:"file_root"`             // e.g., "/var/www/html"
 }
 
-// LoadConfig loads configuration from a JSON file and optional include directory
+// LoadConfig loads configuration from a .conf file and optional include directory
 func LoadConfig(filename string) (*Config, error) {
-	file, err := os.Open(filename)
+	content, err := ioutil.ReadFile(filename)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
 
-	cfg := &Config{}
-	decoder := json.NewDecoder(file)
-	if err := decoder.Decode(cfg); err != nil {
-		return nil, err
+	p := parser.NewParser(string(content))
+	ast, err := p.Parse()
+	if err != nil {
+		return nil, fmt.Errorf("parse error in %s: %v", filename, err)
+	}
+
+	cfg, err := DecodeAST(ast)
+	if err != nil {
+		return nil, fmt.Errorf("decode error in %s: %v", filename, err)
 	}
 
 	// Normalize routes: migrate ProxyTarget to Upstreams if empty
@@ -120,7 +124,8 @@ func LoadConfig(filename string) (*Config, error) {
 
 	// Load additional configs if ConfDir is set
 	if cfg.ConfDir != "" {
-		matches, err := filepath.Glob(filepath.Join(cfg.ConfDir, "*.json"))
+		// Look for .conf files
+		matches, err := filepath.Glob(filepath.Join(cfg.ConfDir, "*.conf"))
 		if err == nil {
 			for _, match := range matches {
 				siteCfg, err := loadSiteConfig(match)
@@ -137,26 +142,25 @@ func LoadConfig(filename string) (*Config, error) {
 }
 
 func loadSiteConfig(filename string) ([]Site, error) {
-	file, err := os.Open(filename)
+	content, err := ioutil.ReadFile(filename)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
 
-	// Try loading as a list of sites first
-	var sites []Site
-	decoder := json.NewDecoder(file)
-	if err := decoder.Decode(&sites); err == nil {
-		return sites, nil
+	p := parser.NewParser(string(content))
+	ast, err := p.Parse()
+	if err != nil {
+		return nil, fmt.Errorf("parse error in %s: %v", filename, err)
 	}
 
-	// If failed, maybe it's a single site object?
-	file.Seek(0, 0)
-	var site Site
-	decoder = json.NewDecoder(file)
-	if err := decoder.Decode(&site); err == nil {
-		return []Site{site}, nil
+	// We expect sites to be in "server" blocks, possibly inside "http", or at root.
+	// But our DecodeAST handles top level "server" and "http" blocks.
+	// So we can reuse DecodeAST but we need to extract sites from the resulting cfg.
+
+	tempCfg, err := DecodeAST(ast)
+	if err != nil {
+		return nil, err
 	}
 
-	return nil, fmt.Errorf("could not decode site config")
+	return tempCfg.Sites, nil
 }
