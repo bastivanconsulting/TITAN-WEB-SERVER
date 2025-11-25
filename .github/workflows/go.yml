@@ -6,7 +6,7 @@ on:
   push:
     branches: [ "main" ]
     tags:
-      - 'v*' 
+      - 'v*'
   pull_request:
     branches: [ "main" ]
 
@@ -25,16 +25,16 @@ jobs:
       with:
         go-version: '1.24.3'
 
-    - name: Download Go dependencies (go mod download)
+    - name: Download Go dependencies
       run: go mod download
 
     - name: Run Tests 🧪
       run: go test -v ./...
 
-    - name: Build executable (titan-web-server)
+    - name: Build executable
       run: go build -v -o titan-web-server ./cmd/server/main.go
       
-    - name: Get Version/Tag (for packaging)
+    - name: Get Version/Tag
       id: get_version
       run: |
         TAG_NAME=$(git describe --tags --always)
@@ -48,7 +48,7 @@ jobs:
 
 # ----------------------------------------------------------------------------------
 
-  # JOB 2: Creation des paquets DEB et RPM
+  # JOB 2: Packaging (DEB/RPM)
   package:
     runs-on: ubuntu-latest
     needs: build
@@ -66,107 +66,95 @@ jobs:
       run: |
         mkdir -p scripts
         
-        # Fichier de service Systemd (Syntaxe cat plus fiable)
-        cat > scripts/titan-server.service << 'EOT'
-[Unit]
-Description=Titan Web Server
-Documentation=https://github.com/bastivanconsulting/WebServer
-After=network.target
+        cat <<EOF > scripts/titan-server.service
+        [Unit]
+        Description=Titan Web Server
+        Documentation=https://github.com/bastivanconsulting/WebServer
+        After=network.target
 
-[Service]
-Type=simple
-User=titan
-Group=titan
-ExecStart=/usr/bin/titan-web-server -config /etc/titan-server/titan-server.conf -node-id %H -raft-addr 0.0.0.0:9000 -raft-dir /var/lib/titan-server
-Restart=always
-LimitNOFILE=65535
+        [Service]
+        Type=simple
+        User=titan
+        Group=titan
+        ExecStart=/usr/bin/titan-web-server -config /etc/titan-server/titan-server.conf -node-id %H -raft-addr 0.0.0.0:9000 -raft-dir /var/lib/titan-server
+        Restart=always
+        LimitNOFILE=65535
 
-[Install]
-WantedBy=multi-user.target
-EOT
+        [Install]
+        WantedBy=multi-user.target
+        EOF
 
-        # Script de post-installation
-        cat > scripts/postinst.sh << 'EOT'
-#!/bin/bash
-if ! getent group titan > /dev/null; then
-    groupadd -r titan
-fi
-if ! getent passwd titan > /dev/null; then
-    useradd -r -g titan -d /var/lib/titan-server -s /sbin/nologin -c "Titan Web Server" titan
-fi
+        cat <<EOF > scripts/postinst.sh
+        #!/bin/bash
+        if ! getent group titan > /dev/null; then
+            groupadd -r titan
+        fi
+        if ! getent passwd titan > /dev/null; then
+            useradd -r -g titan -d /var/lib/titan-server -s /sbin/nologin -c "Titan Web Server" titan
+        fi
+        mkdir -p /var/log/titan /var/lib/titan-server
+        chown -R titan:titan /var/log/titan || :
+        chown -R titan:titan /var/lib/titan-server || :
+        systemctl daemon-reload
+        systemctl enable titan-server.service
+        EOF
 
-mkdir -p /var/log/titan /var/lib/titan-server
-chown -R titan:titan /var/log/titan || :
-chown -R titan:titan /var/lib/titan-server || :
-
-systemctl daemon-reload
-systemctl enable titan-server.service
-EOT
-        
-        # Script de pré-suppression
-        cat > scripts/prerm.sh << 'EOT'
-#!/bin/bash
-if [ "$1" = "remove" ]; then
-    systemctl stop titan-server.service || :
-    systemctl disable titan-server.service || :
-    systemctl daemon-reload
-fi
-EOT
+        cat <<EOF > scripts/prerm.sh
+        #!/bin/bash
+        if [ "\$1" = "remove" ]; then
+            systemctl stop titan-server.service || :
+            systemctl disable titan-server.service || :
+            systemctl daemon-reload
+        fi
+        EOF
 
     - name: Create nfpm configuration
       run: |
         TAG_NAME=$(echo ${{ needs.build.outputs.tag_name }} | sed 's/^v//')
         if [ "$TAG_NAME" == "" ]; then TAG_NAME="0.1.0-dev"; fi
         
-        # Crée nfpm.yaml
-        cat << EOF > nfpm.yaml
-name: "titan-web-server"
-arch: "amd64"
-platform: "linux"
-version: "$TAG_NAME"
-section: "web"
-priority: "extra"
-maintainer: "Bastivan Consulting <contact@bastivanconsulting.com>"
-description: "Serveur Web et reverse proxy haute performance Titan."
-license: "Proprietary/TBD"
-contents:
-  - src: ./titan-web-server
-    dst: /usr/bin/titan-web-server
-    file_info:
-      mode: 0755
-      user: root
-      group: root
-  - src: ./titan-server.conf 
-    dst: /etc/titan-server/titan-server.conf
-    file_info:
-      mode: 0644
-      user: titan
-      group: titan
-      config: true 
-  - src: ./scripts/titan-server.service
-    dst: /etc/systemd/system/titan-server.service
-    file_info:
-      mode: 0644
-      user: root
-      group: root
-  - dst: /var/log/titan
-    type: dir 
-    file_info:
-      mode: 0755
-      user: titan
-      group: titan
-  - dst: /var/lib/titan-server
-    type: dir
-    file_info:
-      mode: 0755
-      user: titan
-      group: titan
-scripts:
-  postinstall: ./scripts/postinst.sh
-  preremove: ./scripts/prerm.sh
-EOF
+        cat <<EOF > nfpm.yaml
+        name: "titan-web-server"
+        arch: "amd64"
+        platform: "linux"
+        version: "$TAG_NAME"
+        section: "web"
+        priority: "extra"
+        maintainer: "Bastivan Consulting <contact@bastivanconsulting.com>"
+        description: "Titan Web Server"
+        license: "Proprietary"
+        contents:
+          - src: ./titan-web-server
+            dst: /usr/bin/titan-web-server
+            file_info:
+              mode: 0755
+          - src: ./titan-server.conf 
+            dst: /etc/titan-server/titan-server.conf
+            file_info:
+              mode: 0644
+              config: true 
+          - src: ./scripts/titan-server.service
+            dst: /etc/systemd/system/titan-server.service
+            file_info:
+              mode: 0644
+          - dst: /var/log/titan
+            type: dir 
+            file_info:
+              mode: 0755
+              user: titan
+              group: titan
+          - dst: /var/lib/titan-server
+            type: dir
+            file_info:
+              mode: 0755
+              user: titan
+              group: titan
+        scripts:
+          postinstall: ./scripts/postinst.sh
+          preremove: ./scripts/prerm.sh
+        EOF
 
-    - name: Build Debian and RPM packages 📦
+    - name: Build Packages 📦
       uses: goreleaser/nfpm-action@v3
       with:
         nfpm_file: nfpm.yaml
@@ -180,7 +168,7 @@ EOF
 
 # ----------------------------------------------------------------------------------
 
-  # JOB 3: Création de la Release GitHub
+  # JOB 3: Release
   release:
     runs-on: ubuntu-latest
     needs: package
@@ -188,24 +176,18 @@ EOF
     steps:
     - uses: actions/checkout@v4
       
-    - name: Download Packages Artifact
+    - name: Download Packages
       uses: actions/download-artifact@v4
       with:
         name: titan-web-server-packages
         path: packages/
         
-    - name: Create GitHub Release and Upload Assets 🚀
+    - name: Create Release
       uses: softprops/action-gh-release@v2
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         tag_name: ${{ github.ref_name }}
         name: Release ${{ github.ref_name }}
-        body: |
-          Automatic release of Titan Web Server packages.
-          
-          Assets include:
-          - .deb package for Debian/Ubuntu
-          - .rpm package for Red Hat/CentOS
-        files: |
-          packages/*
+        body: "Automatic release of Titan Web Server packages (.deb, .rpm)."
+        files: packages/*
