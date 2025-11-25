@@ -27,7 +27,7 @@ CONFIG_DIR="/etc/titan"
 LOG_DIR="/var/log/titan"
 RAFT_DIR="/var/lib/titan/raft"
 SERVICE_FILE="/etc/systemd/system/titan-server.service"
-USER="www-data"
+USER="root"
 
 log "Mise à jour des paquets et installation des dépendances..."
 apt-get update
