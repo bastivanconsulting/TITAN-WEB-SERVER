@@ -45,6 +45,15 @@ func NewPHPEndpoint(root string) func(gofast.SessionHandler) gofast.SessionHandl
 					// Update Params
 					r.Params["SCRIPT_FILENAME"] = fullPath
 					r.Params["DOCUMENT_ROOT"] = cleanRoot
+
+					// Ensure SCRIPT_NAME is accurate if we appended index.php,
+					// or generally ensure it aligns with SCRIPT_FILENAME relative to document root.
+					// Nginx sets SCRIPT_NAME to the path of the script execution.
+					// If we requested "/" and we are executing "/index.php", SCRIPT_NAME should be "/index.php".
+					if strings.HasSuffix(rawReq.URL.Path, "/") {
+						r.Params["SCRIPT_NAME"] = rawReq.URL.Path + "index.php"
+					}
+
 					return nil
 				},
 			}
@@ -75,8 +84,17 @@ func NewHybridHandler(root string, phpHandler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 
-		// 1. Basic extension check (optimization)
+		// 1. Basic extension check (optimization) with existence check (like Nginx try_files $uri =404)
 		if strings.HasSuffix(path, ".php") {
+			// Check if file exists in root
+			fullPath := filepath.Join(root, path)
+			if _, err := os.Stat(fullPath); err != nil {
+				// PHP file does not exist. Return 404 directly to avoid passing to PHP-FPM
+				// or let FileServer handle it (which will also 404, but cleaner).
+				// We prefer standard 404 response.
+				http.NotFound(w, r)
+				return
+			}
 			phpHandler.ServeHTTP(w, r)
 			return
 		}
