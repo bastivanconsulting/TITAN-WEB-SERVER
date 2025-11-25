@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -21,6 +22,7 @@ type Config struct {
 	Cache          *Cache          `json:"cache"`            // Cache configuration
 	Security       *GlobalSecurity `json:"security"`         // Global security settings
 	Sites          []Site          `json:"sites"`
+	ManualCerts    map[string]*tls.Certificate `json:"-"` // Loaded from /etc/titan/certs/manual
 }
 
 // Validate checks the configuration for errors

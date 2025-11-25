@@ -633,6 +633,32 @@ func (s *Server) Start() error {
 	hasOCSP := false
 	var acmeDomains []string
 
+	// Load manual certificates from /etc/titan/certs/manual/
+	s.Config.ManualCerts = make(map[string]*tls.Certificate)
+	manualCertDir := "/etc/titan/certs/manual/"
+	files, err := os.ReadDir(manualCertDir)
+	if err == nil {
+		for _, file := range files {
+			if strings.HasSuffix(file.Name(), ".crt") {
+				certFile := manualCertDir + file.Name()
+				keyFile := manualCertDir + strings.TrimSuffix(file.Name(), ".crt") + ".key"
+				if _, err := os.Stat(keyFile); err == nil {
+					cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+					if err != nil {
+						fmt.Printf("Warning: Could not load manual certificate %s: %v\n", file.Name(), err)
+						continue
+					}
+					// TODO: Extract domains from certificate
+					// For now, we'll use the filename as the domain
+					domain := strings.TrimSuffix(file.Name(), ".crt")
+					s.Config.ManualCerts[domain] = &cert
+					fmt.Printf("Loaded manual certificate for %s\n", domain)
+				}
+			}
+		}
+	}
+
+
 	// Ensure default self-signed certs exist
 	defaultCert := "server.crt"
 	defaultKey := "server.key"
@@ -731,7 +757,15 @@ func (s *Server) Start() error {
 			tlsConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 				domain := strings.ToLower(hello.ServerName)
 
-				// 1. Check Manual Certs
+				// 1. Check Manually loaded certs from /etc/titan/certs/manual
+				s.mu.RLock()
+				manualCert, ok := s.Config.ManualCerts[domain]
+				s.mu.RUnlock()
+				if ok {
+					return manualCert, nil
+				}
+
+				// 2. Check Manual Certs from config file
 				if cert, ok := certMap[domain]; ok {
 					// Apply OCSP Staple if available
 					if staple := ocspManager.GetStaple(domain); staple != nil {
@@ -743,7 +777,7 @@ func (s *Server) Start() error {
 					return cert, nil
 				}
 
-				// 2. Check ACME
+				// 3. Check ACME
 				if m != nil {
 					// Only use ACME if the domain is whitelisted/configured
 					// Autocert Manager HostPolicy handles this check, but GetCertificate might still run.
@@ -755,7 +789,7 @@ func (s *Server) Start() error {
 					}
 				}
 
-				// 3. Fallback to Default Self-Signed Cert
+				// 4. Fallback to Default Self-Signed Cert
 				if defaultTLSCert != nil {
 					return defaultTLSCert, nil
 				}
