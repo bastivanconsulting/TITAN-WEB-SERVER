@@ -674,12 +674,25 @@ func (s *Server) Start() error {
 			fmt.Printf("Warning: Failed to create certs directory: %v\n", err)
 		}
 
+		var acmeEmail string
+		for _, site := range s.Config.Sites {
+			if site.SSL != nil && site.SSL.Provider == "letsencrypt" && site.SSL.Email != "" {
+				acmeEmail = site.SSL.Email
+				break
+			}
+		}
+
 		m = &autocert.Manager{
 			Cache:      autocert.DirCache("certs"),
 			Prompt:     autocert.AcceptTOS,
 			HostPolicy: autocert.HostWhitelist(acmeDomains...),
+			Email:      acmeEmail,
 		}
-		fmt.Printf("ACME/Let's Encrypt enabled for: %v\n", acmeDomains)
+		if acmeEmail != "" {
+			fmt.Printf("ACME/Let's Encrypt enabled for: %v with email %s\n", acmeDomains, acmeEmail)
+		} else {
+			fmt.Printf("ACME/Let's Encrypt enabled for: %v (no email provided)\n", acmeDomains)
+		}
 	}
 
 	// Start HTTP Server if configured
