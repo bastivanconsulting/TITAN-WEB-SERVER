@@ -1,42 +1,224 @@
-# This workflow will build a golang project
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
+# .github/workflows/go.yml
 
-name: Go CI (Test & Build)
+name: Go CI (Test, Build & Release)
 
 on:
   push:
+    # Déclenchement de la CI pour les branches principales
     branches: [ "main" ]
+    # Déclenchement de la RELEASE lorsqu'un tag est poussé
+    tags:
+      - 'v*' # Ex: v1.0.0, v1.0.1, etc.
   pull_request:
     branches: [ "main" ]
 
 jobs:
 
+  # JOB 1: Test et Build du binaire
   build:
     runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.get_version.outputs.tag }}
+      # Condition pour la suite (ne pas exécuter package/release si c'est juste un PR/push sur main)
+      should_release: ${{ startsWith(github.ref, 'refs/tags/v') }}
     steps:
     - uses: actions/checkout@v4
 
     - name: Set up Go 1.24.3
       uses: actions/setup-go@v5
       with:
-        # Correspond à la version dans go.mod
         go-version: '1.24.3'
 
     - name: Download Go dependencies (go mod download)
-      # Télécharge les dépendances pour assurer que les tests et la compilation trouvent tout
       run: go mod download
 
     - name: Run Tests 🧪
-      # Exécute tous les tests du projet, ce qui garantit que le cache, le proxy et les autres fonctions de base sont valides
       run: go test -v ./...
 
     - name: Build executable (titan-web-server)
-      # Compilation du binaire principal (l'exécutable qui sera distribué)
       run: go build -v -o titan-web-server ./cmd/server/main.go
       
+    - name: Get Version/Tag (for packaging)
+      id: get_version
+      # Utilise le tag si disponible, sinon le dernier commit
+      run: |
+        TAG_NAME=$(git describe --tags --always)
+        echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
+        
     - name: Upload Build Artifact
-      # Stocke le binaire compilé comme un "artifact" temporaire (utile pour une vérification manuelle)
       uses: actions/upload-artifact@v4
       with:
         name: titan-web-server-linux-amd64
         path: titan-web-server
+
+  # -------------------------------------------------------------
+  # JOB 2: Creation des paquets DEB et RPM
+  # -------------------------------------------------------------
+  package:
+    runs-on: ubuntu-latest
+    needs: build
+    # Condition: N'exécute le packaging que si un tag a été poussé (pour la release)
+    # ou si on est sur la branche principale (pour la vérification de build)
+    if: success() && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Download Build Artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: titan-web-server-linux-amd64
+        path: .
+
+    # Étape 2: Création des fichiers de support (Service, postinst, prerm)
+    # NOTE: Cette étape est répétée pour s'assurer que les scripts existent pour NFPM.
+    - name: Create packaging scripts
+      run: |
+        mkdir -p scripts
+        
+        # Fichier de service Systemd 
+        cat << EOF > scripts/titan-server.service
+[Unit]
+Description=Titan Web Server
+Documentation=https://github.com/bastivanconsulting/WebServer
+After=network.target
+
+[Service]
+Type=simple
+User=titan
+Group=titan
+ExecStart=/usr/bin/titan-web-server -config /etc/titan-server/titan-server.conf -node-id %H -raft-addr 0.0.0.0:9000 -raft-dir /var/lib/titan-server
+Restart=always
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+        # Script de post-installation
+        cat << EOF > scripts/postinst.sh
+#!/bin/bash
+if ! getent group titan > /dev/null; then
+    groupadd -r titan
+fi
+if ! getent passwd titan > /dev/null; then
+    useradd -r -g titan -d /var/lib/titan-server -s /sbin/nologin -c "Titan Web Server" titan
+fi
+
+mkdir -p /var/log/titan /var/lib/titan-server
+chown -R titan:titan /var/log/titan || :
+chown -R titan:titan /var/lib/titan-server || :
+
+systemctl daemon-reload
+systemctl enable titan-server.service
+EOF
+        
+        # Script de pré-suppression
+        cat << EOF > scripts/prerm.sh
+#!/bin/bash
+if [ "\$1" = "remove" ]; then
+    systemctl stop titan-server.service || :
+    systemctl disable titan-server.service || :
+    systemctl daemon-reload
+fi
+EOF
+
+    # Étape 3: Créer le fichier de configuration nfpm
+    - name: Create nfpm configuration
+      run: |
+        TAG_NAME=$(echo ${{ needs.build.outputs.tag_name }} | sed 's/^v//')
+        if [ "$TAG_NAME" == "" ]; then TAG_NAME="0.1.0-dev"; fi
+        
+        # Crée nfpm.yaml
+        cat << EOF > nfpm.yaml
+name: "titan-web-server"
+arch: "amd64"
+platform: "linux"
+version: "$TAG_NAME"
+section: "web"
+priority: "extra"
+maintainer: "Bastivan Consulting <contact@bastivanconsulting.com>"
+description: "Serveur Web et reverse proxy haute performance Titan."
+license: "Proprietary/TBD"
+contents:
+  - src: ./titan-web-server
+    dst: /usr/bin/titan-web-server
+    file_info:
+      mode: 0755
+      user: root
+      group: root
+  - src: ./titan-server.conf 
+    dst: /etc/titan-server/titan-server.conf
+    file_info:
+      mode: 0644
+      user: titan
+      group: titan
+      config: true 
+  - src: ./scripts/titan-server.service
+    dst: /etc/systemd/system/titan-server.service
+    file_info:
+      mode: 0644
+      user: root
+      group: root
+  - dst: /var/log/titan
+    type: dir 
+    file_info:
+      mode: 0755
+      user: titan
+      group: titan
+  - dst: /var/lib/titan-server
+    type: dir
+    file_info:
+      mode: 0755
+      user: titan
+      group: titan
+scripts:
+  postinstall: ./scripts/postinst.sh
+  preremove: ./scripts/prerm.sh
+EOF
+
+    # Étape 4: Créer les packages .deb et .rpm avec nfpm
+    - name: Build Debian and RPM packages 📦
+      uses: goreleaser/nfpm-action@v3
+      with:
+        nfpm_file: nfpm.yaml
+        targets: "deb,rpm"
+        
+    - name: Upload Packages Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: titan-web-server-packages
+        path: packages/
+
+  # -------------------------------------------------------------
+  # NOUVEAU JOB : Création de la Release GitHub
+  # -------------------------------------------------------------
+  release:
+    runs-on: ubuntu-latest
+    needs: package
+    # Condition: Exécute la release UNIQUEMENT si le push était un tag (v*)
+    if: success() && startsWith(github.ref, 'refs/tags/v')
+    steps:
+    - uses: actions/checkout@v4
+      
+    - name: Download Packages Artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: titan-web-server-packages
+        path: packages/
+        
+    - name: Create GitHub Release and Upload Assets 🚀
+      uses: softprops/action-gh-release@v2 # Utilisation de l'action softprops
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref_name }} # Utilise le nom du tag (e.g., v1.0.0)
+        name: Release ${{ github.ref_name }} # Nomme la release
+        body: |
+          Automatic release of Titan Web Server packages.
+          
+          Assets include:
+          - .deb package for Debian/Ubuntu
+          - .rpm package for Red Hat/CentOS
+        # Joindre tous les fichiers du répertoire packages/ (i.e., .deb et .rpm)
+        files: |
+          packages/*
