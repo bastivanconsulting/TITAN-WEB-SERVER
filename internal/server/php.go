@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -43,16 +44,48 @@ func NewPHPEndpoint(root string) func(gofast.SessionHandler) gofast.SessionHandl
 					}
 
 					// Update Params
+					// Standard CGI variables
 					r.Params["SCRIPT_FILENAME"] = fullPath
 					r.Params["DOCUMENT_ROOT"] = cleanRoot
+					r.Params["REQUEST_URI"] = rawReq.URL.RequestURI()
+					r.Params["DOCUMENT_URI"] = rawReq.URL.Path // or rawReq.URL.RequestURI()? Path is safer.
+					r.Params["QUERY_STRING"] = rawReq.URL.RawQuery
+					r.Params["REQUEST_METHOD"] = rawReq.Method
+					r.Params["CONTENT_TYPE"] = rawReq.Header.Get("Content-Type")
+					r.Params["CONTENT_LENGTH"] = fmt.Sprintf("%d", rawReq.ContentLength)
+					r.Params["SERVER_PROTOCOL"] = rawReq.Proto
+					r.Params["GATEWAY_INTERFACE"] = "CGI/1.1"
+					r.Params["SERVER_SOFTWARE"] = "Titan Web Server"
 
-					// Ensure SCRIPT_NAME is accurate if we appended index.php,
-					// or generally ensure it aligns with SCRIPT_FILENAME relative to document root.
-					// Nginx sets SCRIPT_NAME to the path of the script execution.
-					// If we requested "/" and we are executing "/index.php", SCRIPT_NAME should be "/index.php".
-					if strings.HasSuffix(rawReq.URL.Path, "/") {
-						r.Params["SCRIPT_NAME"] = rawReq.URL.Path + "index.php"
+					// Parse Remote Addr/Port
+					if host, port, err := net.SplitHostPort(rawReq.RemoteAddr); err == nil {
+						r.Params["REMOTE_ADDR"] = host
+						r.Params["REMOTE_PORT"] = port
+					} else {
+						r.Params["REMOTE_ADDR"] = rawReq.RemoteAddr
 					}
+
+					// Parse Server Addr/Port
+					if host, port, err := net.SplitHostPort(rawReq.Host); err == nil {
+						r.Params["SERVER_NAME"] = host
+						r.Params["SERVER_PORT"] = port
+					} else {
+						r.Params["SERVER_NAME"] = rawReq.Host
+					}
+
+					// Server Addr (local listener address) is harder to get here,
+					// but SERVER_NAME is the more common requirement.
+					r.Params["SERVER_ADDR"] = "" // Left blank for now
+
+					if rawReq.TLS != nil {
+						r.Params["HTTPS"] = "on"
+					}
+
+					scriptName := rawReq.URL.Path
+					if strings.HasSuffix(rawReq.URL.Path, "/") {
+						scriptName = rawReq.URL.Path + "index.php"
+					}
+					r.Params["SCRIPT_NAME"] = scriptName
 
 					return nil
 				},
