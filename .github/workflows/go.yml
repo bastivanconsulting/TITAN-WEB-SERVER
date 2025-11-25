@@ -8,7 +8,7 @@ on:
   pull_request:
     branches: [ "main" ]
 
-# ⚠️ INDISPENSABLE : Permet au workflow de créer des Releases et des Tags
+# Permet au workflow de créer des Releases et des Tags
 permissions:
   contents: write
 
@@ -39,10 +39,8 @@ jobs:
     - name: Generate Auto Version
       id: get_version
       run: |
-        # Génération automatique : v0.1.{Numéro de Build GitHub}
-        # Exemple : v0.1.42
+        # Génération : v0.1.{BuildNumber}
         AUTO_TAG="v0.1.${{ github.run_number }}"
-        echo "Version générée : $AUTO_TAG"
         echo "tag=$AUTO_TAG" >> $GITHUB_OUTPUT
         
     - name: Upload Build Artifact
@@ -57,12 +55,11 @@ jobs:
   package:
     runs-on: ubuntu-latest
     needs: build
-    # On exécute sur la branche main
     if: success() && github.ref == 'refs/heads/main'
     steps:
     - uses: actions/checkout@v4
     
-    # Ajout de Go pour pouvoir installer nFPM
+    # Nécessaire pour installer nFPM
     - name: Set up Go 1.24.3
       uses: actions/setup-go@v5
       with:
@@ -122,7 +119,6 @@ jobs:
 
     - name: Create nfpm configuration
       run: |
-        # On nettoie le 'v' pour la version du paquet (Linux n'aime pas le 'v' dans la version)
         TAG_NAME=$(echo ${{ needs.build.outputs.tag_name }} | sed 's/^v//')
         
         cat <<EOF > nfpm.yaml
@@ -142,9 +138,9 @@ jobs:
               mode: 0755
           - src: ./titan-server.conf 
             dst: /etc/titan-server/titan-server.conf
+            type: config  # CORRECTION ICI (au lieu de config: true dans file_info)
             file_info:
               mode: 0644
-              config: true 
           - src: ./scripts/titan-server.service
             dst: /etc/systemd/system/titan-server.service
             file_info:
@@ -153,29 +149,24 @@ jobs:
             type: dir 
             file_info:
               mode: 0755
-              user: titan
+              owner: titan  # CORRECTION ICI (au lieu de user: titan)
               group: titan
           - dst: /var/lib/titan-server
             type: dir
             file_info:
               mode: 0755
-              user: titan
+              owner: titan  # CORRECTION ICI (au lieu de user: titan)
               group: titan
         scripts:
           postinstall: ./scripts/postinst.sh
           preremove: ./scripts/prerm.sh
         EOF
 
-    # CORRECTION : Installation et exécution manuelle de nFPM
     - name: Install and Run nFPM 📦
       run: |
-        # 1. Installer nFPM via Go
         go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
-        
-        # 2. Créer le dossier de sortie
         mkdir -p packages
         
-        # 3. Générer les paquets
         echo "Building DEB..."
         nfpm package --config nfpm.yaml --packager deb --target packages/
         
