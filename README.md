@@ -116,6 +116,8 @@ Voici une explication simple de chaque option :
 
 ### Sécurité (`security`)
 
+<img width="1088" height="523" alt="image" src="https://github.com/user-attachments/assets/e913c1b0-19dc-4d88-a57f-ecea52ccf75f" />
+
 *   **`fips_compliant`** : Mettez `true` (vrai) pour activer le mode "Haute Sécurité". Cela force le serveur à utiliser uniquement des chiffrements très robustes.
 
 ### Sites (`sites`)
