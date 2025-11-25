@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -424,6 +425,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rw := NewResponseWriter(w)
 
 	// 0. Intercept API and Admin requests
+	// Note: Internal API for cluster sync bypasses normal auth for performance,
+	// but relies on the shared API key.
+	if strings.HasPrefix(r.URL.Path, "/api/internal/certs/") {
+		s.handleCertSync(rw, r)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		s.handleAPI(rw, r)
 		return
@@ -709,17 +716,17 @@ func (s *Server) Start() error {
 			}
 		}
 
+		if acmeEmail == "" {
+			log.Fatalf("ACME/Let's Encrypt is enabled but no email address is provided in any site configuration. This is required by Let's Encrypt TOS.")
+		}
+
 		m = &autocert.Manager{
 			Cache:      autocert.DirCache(certDir),
 			Prompt:     autocert.AcceptTOS,
 			HostPolicy: autocert.HostWhitelist(acmeDomains...),
 			Email:      acmeEmail,
 		}
-		if acmeEmail != "" {
-			fmt.Printf("ACME/Let's Encrypt enabled for: %v with email %s\n", acmeDomains, acmeEmail)
-		} else {
-			fmt.Printf("ACME/Let's Encrypt enabled for: %v (no email provided)\n", acmeDomains)
-		}
+		log.Printf("ACME/Let's Encrypt enabled for domains: %v (Email: %s)", acmeDomains, acmeEmail)
 	}
 
 	// Start HTTP Server if configured
@@ -946,4 +953,35 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+}
+
+func (s *Server) handleCertSync(w http.ResponseWriter, r *http.Request) {
+	s.mu.RLock()
+	node := s.ClusterNode
+	apiKey := s.Config.AdminAPIKey
+	s.mu.RUnlock()
+
+	if node == nil {
+		http.Error(w, "Clustering not enabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Authenticate request
+	if r.Header.Get("X-API-Key") != apiKey {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	leaderAddr := string(node.Raft.Leader())
+
+	switch r.URL.Path {
+	case cluster.SyncEndpoint:
+		// This is a follower receiving a manifest from the leader
+		node.HandleSyncRequest(w, r, leaderAddr, apiKey)
+	case cluster.FileEndpoint:
+		// This is the leader serving a file to a follower
+		node.HandleFileRequest(w, r)
+	default:
+		http.NotFound(w, r)
+	}
 }
