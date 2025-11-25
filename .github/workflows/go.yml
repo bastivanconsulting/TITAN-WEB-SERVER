@@ -89,7 +89,7 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 EOF
 
-        # Script de post-installation (création utilisateur/permissions)
+        # Script de post-installation
         cat << EOF > scripts/postinst.sh
 #!/bin/bash
 if ! getent group titan > /dev/null; then
@@ -118,7 +118,6 @@ fi
 EOF
 
     - name: Create nfpm configuration
-      # Le TAG_NAME doit être nettoyé du préfixe 'v'
       run: |
         TAG_NAME=$(echo ${{ needs.build.outputs.tag_name }} | sed 's/^v//')
         if [ "$TAG_NAME" == "" ]; then TAG_NAME="0.1.0-dev"; fi
