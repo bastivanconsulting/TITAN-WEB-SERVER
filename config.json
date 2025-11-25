@@ -60,13 +60,16 @@
             }
         },
         {
-            "domain": "legacy.local",
+            "domain": "bc-vm-82-21-0-53-eu-west-par.bastivan.cloud",
             "routes": [
                 {
                     "path": "/",
                     "type": "php",
                     "proxy_target": "127.0.0.1:9000",
-                    "file_root": "/var/www/legacy/public"
+                    "upstreams": [
+                        "127.0.0.1:9000"
+                    ],
+                    "file_root": "/var/www/titan/public/"
                 }
             ]
         },
