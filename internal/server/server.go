@@ -229,11 +229,12 @@ func (s *Server) initHandlersLocked() error {
 				}
 
 				connFactory := gofast.SimpleConnFactory(network, address)
-				handler := gofast.NewHandler(
+				phpHandler := gofast.NewHandler(
 					NewPHPEndpoint(route.FileRoot)(gofast.BasicSession),
 					gofast.SimpleClientFactory(connFactory),
 				)
-				s.phpHandlers[key] = handler
+				// Wrap with HybridHandler to support static files
+				s.phpHandlers[key] = NewHybridHandler(route.FileRoot, phpHandler)
 
 			case "proxy":
 				// Generate key from all upstreams to handle load balancing groups

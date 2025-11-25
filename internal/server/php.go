@@ -2,6 +2,8 @@ package server
 
 import (
 	"fmt"
+	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -63,4 +65,56 @@ func (c *paramModifierClient) Do(req *gofast.Request) (*gofast.ResponsePipe, err
 		return nil, err
 	}
 	return c.Client.Do(req)
+}
+
+// NewHybridHandler creates a handler that serves static files directly
+// and delegates PHP requests to the provided phpHandler.
+func NewHybridHandler(root string, phpHandler http.Handler) http.Handler {
+	fileServer := http.FileServer(http.Dir(root))
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+
+		// 1. Basic extension check (optimization)
+		if strings.HasSuffix(path, ".php") {
+			phpHandler.ServeHTTP(w, r)
+			return
+		}
+
+		// 2. Check filesystem for existence and directory status
+		fullPath := filepath.Join(root, path)
+		info, err := os.Stat(fullPath)
+		if err != nil {
+			// File does not exist.
+			// Let FileServer handle the 404 (or we could handle it)
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+
+		if info.IsDir() {
+			// If it's a directory, check for index.php first (priority to PHP)
+			phpIndex := filepath.Join(fullPath, "index.php")
+			if _, err := os.Stat(phpIndex); err == nil {
+				// We need to ensure the request path ends in / for the upstream handler to attach index.php correctly
+				// or we rely on the fact that we are passing it to phpHandler which uses NewPHPEndpoint
+				// which checks strings.HasSuffix(rawReq.URL.Path, "/").
+
+				// Standard http behavior: if requesting dir without slash, redirect to slash.
+				if !strings.HasSuffix(path, "/") {
+					http.Redirect(w, r, path+"/", http.StatusMovedPermanently)
+					return
+				}
+
+				phpHandler.ServeHTTP(w, r)
+				return
+			}
+
+			// If no index.php, fall back to FileServer (looks for index.html or lists dir)
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+
+		// It's a file and not .php (checked above)
+		fileServer.ServeHTTP(w, r)
+	})
 }
