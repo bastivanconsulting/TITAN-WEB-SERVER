@@ -9,7 +9,6 @@ on:
       - 'v*'
   pull_request:
     branches: [ "main" ]
-  # Permet le déclenchement manuel depuis l'interface GitHub
   workflow_dispatch:
     inputs:
       version:
@@ -23,220 +22,195 @@ permissions:
 
 jobs:
 
+  # -----------------------------
   # JOB 1: Test et Build
+  # -----------------------------
   build:
     runs-on: ubuntu-latest
     outputs:
       tag_name: ${{ steps.get_version.outputs.tag }}
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Set up Go 1.24.3
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.24.3'
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.3'
 
-    - name: Download Go dependencies
-      run: go mod download
+      - name: Download Go dependencies
+        run: go mod download
 
-    - name: Run Tests 🧪
-      run: go test -v ./...
+      - name: Run Tests 🧪
+        run: go test -v ./...
 
-    - name: Build executable
-      run: go build -v -o titan-web-server ./cmd/server/main.go
-      
-    - name: Get Version
-      id: get_version
-      run: |
-        # Logique hybride :
-        # 1. Si déclenché manuellement -> utilise l'input
-        # 2. Si push de tag -> utilise le tag
-        # 3. Sinon -> génère une version auto
-        
-        if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-          TAG_NAME="${{ github.event.inputs.version }}"
-        elif [[ $GITHUB_REF == refs/tags/* ]]; then
-          TAG_NAME=${GITHUB_REF#refs/tags/}
-        else
-          TAG_NAME="v0.1.${{ github.run_number }}"
-        fi
-        
-        echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
-        echo "Version utilisée : $TAG_NAME"
-        
-    - name: Upload Build Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: titan-web-server-linux-amd64
-        path: titan-web-server
+      - name: Build executable
+        run: go build -v -o titan-web-server ./cmd/server/main.go
 
-# ----------------------------------------------------------------------------------
+      - name: Get Version
+        id: get_version
+        run: |
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            TAG_NAME=${GITHUB_REF#refs/tags/}
+          else
+            TAG_NAME="v0.1.${{ github.run_number }}"
+          fi
+          echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "Version utilisée : $TAG_NAME"
 
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: titan-web-server-linux-amd64
+          path: titan-web-server
+
+  # -----------------------------
   # JOB 2: Packaging (DEB/RPM)
+  # -----------------------------
   package:
     runs-on: ubuntu-latest
     needs: build
-    # On exécute si c'est un tag, un déclenchement manuel, ou main
-    if: success() && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main')
+    if: success() && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Set up Go 1.24.3
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.24.3'
-    
-    - name: Download Build Artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: titan-web-server-linux-amd64
-        path: .
+      - uses: actions/checkout@v4
 
-    - name: Create packaging scripts
-      run: |
-        mkdir -p scripts
-        
-        # Création du service Systemd
-        # Utilisation de 'EOF' entre quotes pour éviter les soucis d'expansion
-        cat > scripts/titan-server.service << 'EOF'
-        [Unit]
-        Description=Titan Web Server
-        Documentation=https://github.com/bastivanconsulting/WebServer
-        After=network.target
+      - name: Download Build Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: titan-web-server-linux-amd64
+          path: .
 
-        [Service]
-        Type=simple
-        User=titan
-        Group=titan
-        ExecStart=/usr/bin/titan-web-server -config /etc/titan-server/titan-server.conf -node-id %H -raft-addr 0.0.0.0:9000 -raft-dir /var/lib/titan-server
-        Restart=always
-        LimitNOFILE=65535
+      - name: Create packaging scripts
+        run: |
+          mkdir -p scripts
+          cat > scripts/titan-server.service << 'EOF'
+          [Unit]
+          Description=Titan Web Server
+          Documentation=https://github.com/bastivanconsulting/WebServer
+          After=network.target
 
-        [Install]
-        WantedBy=multi-user.target
-        EOF
+          [Service]
+          Type=simple
+          User=titan
+          Group=titan
+          ExecStart=/usr/bin/titan-web-server -config /etc/titan-server/titan-server.conf -node-id %H -raft-addr 0.0.0.0:9000 -raft-dir /var/lib/titan-server
+          Restart=always
+          LimitNOFILE=65535
 
-        # Script post-installation
-        cat > scripts/postinst.sh << 'EOF'
-        #!/bin/bash
-        if ! getent group titan > /dev/null; then
-            groupadd -r titan
-        fi
-        if ! getent passwd titan > /dev/null; then
-            useradd -r -g titan -d /var/lib/titan-server -s /sbin/nologin -c "Titan Web Server" titan
-        fi
-        mkdir -p /var/log/titan /var/lib/titan-server
-        chown -R titan:titan /var/log/titan || :
-        chown -R titan:titan /var/lib/titan-server || :
-        systemctl daemon-reload
-        systemctl enable titan-server.service
-        EOF
+          [Install]
+          WantedBy=multi-user.target
+          EOF
 
-        # Script pré-suppression
-        cat > scripts/prerm.sh << 'EOF'
-        #!/bin/bash
-        if [ "$1" = "remove" ]; then
-            systemctl stop titan-server.service || :
-            systemctl disable titan-server.service || :
-            systemctl daemon-reload
-        fi
-        EOF
-        
-        chmod +x scripts/postinst.sh scripts/prerm.sh
+          cat > scripts/postinst.sh << 'EOF'
+          #!/bin/bash
+          if ! getent group titan > /dev/null; then
+              groupadd -r titan
+          fi
+          if ! getent passwd titan > /dev/null; then
+              useradd -r -g titan -d /var/lib/titan-server -s /sbin/nologin -c "Titan Web Server" titan
+          fi
+          mkdir -p /var/log/titan /var/lib/titan-server
+          chown -R titan:titan /var/log/titan /var/lib/titan-server
+          systemctl daemon-reload
+          systemctl enable titan-server.service
+          EOF
 
-    - name: Create nfpm configuration
-      run: |
-        TAG_NAME=$(echo ${{ needs.build.outputs.tag_name }} | sed 's/^v//')
-        
-        cat > nfpm.yaml << EOF
-        name: "titan-web-server"
-        arch: "amd64"
-        platform: "linux"
-        version: "$TAG_NAME"
-        section: "web"
-        priority: "extra"
-        maintainer: "Bastivan Consulting <contact@bastivanconsulting.com>"
-        description: "Titan Web Server"
-        license: "Proprietary"
-        contents:
-          - src: ./titan-web-server
-            dst: /usr/bin/titan-web-server
-            file_info:
-              mode: 0755
-          - src: ./titan-server.conf 
-            dst: /etc/titan-server/titan-server.conf
-            type: config
-            file_info:
-              mode: 0644
-          - src: ./scripts/titan-server.service
-            dst: /etc/systemd/system/titan-server.service
-            file_info:
-              mode: 0644
-          - dst: /var/log/titan
-            type: dir 
-            file_info:
-              mode: 0755
-              owner: titan
-              group: titan
-          - dst: /var/lib/titan-server
-            type: dir
-            file_info:
-              mode: 0755
-              owner: titan
-              group: titan
-        scripts:
-          postinstall: ./scripts/postinst.sh
-          preremove: ./scripts/prerm.sh
-        EOF
+          cat > scripts/prerm.sh << 'EOF'
+          #!/bin/bash
+          if [ "$1" = "remove" ]; then
+              systemctl stop titan-server.service || :
+              systemctl disable titan-server.service || :
+              systemctl daemon-reload
+          fi
+          EOF
 
-    - name: Install and Run nFPM 📦
-      run: |
-        go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
-        mkdir -p packages
-        
-        echo "Building DEB..."
-        nfpm package --config nfpm.yaml --packager deb --target packages/
-        
-        echo "Building RPM..."
-        nfpm package --config nfpm.yaml --packager rpm --target packages/
-        
-        ls -l packages/
-        
-    - name: Upload Packages Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: titan-web-server-packages
-        path: packages/
+          chmod +x scripts/postinst.sh scripts/prerm.sh
 
-# ----------------------------------------------------------------------------------
+      - name: Create nfpm configuration
+        run: |
+          TAG_NAME=$(echo ${{ needs.build.outputs.tag_name }} | sed 's/^v//')
+          cat > nfpm.yaml << EOF
+          name: "titan-web-server"
+          arch: "amd64"
+          platform: "linux"
+          version: "$TAG_NAME"
+          section: "web"
+          priority: "extra"
+          maintainer: "Bastivan Consulting <contact@bastivanconsulting.com>"
+          description: "Titan Web Server"
+          license: "Proprietary"
+          contents:
+            - src: ./titan-web-server
+              dst: /usr/bin/titan-web-server
+              file_info:
+                mode: 0755
+            - src: ./titan-server.conf
+              dst: /etc/titan-server/titan-server.conf
+              type: config
+              file_info:
+                mode: 0644
+            - src: ./scripts/titan-server.service
+              dst: /etc/systemd/system/titan-server.service
+              file_info:
+                mode: 0644
+            - dst: /var/log/titan
+              type: dir
+              file_info:
+                mode: 0755
+                owner: titan
+                group: titan
+            - dst: /var/lib/titan-server
+              type: dir
+              file_info:
+                mode: 0755
+                owner: titan
+                group: titan
+          scripts:
+            postinstall: ./scripts/postinst.sh
+            preremove: ./scripts/prerm.sh
+          EOF
 
-  # JOB 3: Release (Déclenchement manuel ou sur Tag)
+      - name: Install and Run nFPM 📦
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          mkdir -p packages
+          nfpm package --config nfpm.yaml --packager deb --target packages/
+          nfpm package --config nfpm.yaml --packager rpm --target packages/
+          ls -l packages/
+
+      - name: Upload Packages Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: titan-web-server-packages
+          path: packages/
+
+  # -----------------------------
+  # JOB 3: Release (UNIQUEMENT sur tag)
+  # -----------------------------
   release:
     runs-on: ubuntu-latest
     needs: [build, package]
-    # Exécute UNIQUEMENT si c'est un Tag ou un lancement manuel
-    if: success() && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch')
+    if: success() && startsWith(github.ref, 'refs/tags/v')
     steps:
-    - uses: actions/checkout@v4
-      
-    - name: Download Packages
-      uses: actions/download-artifact@v4
-      with:
-        name: titan-web-server-packages
-        path: packages/
-        
-    - name: Create Release & Tag 🚀
-      uses: softprops/action-gh-release@v2
-      with:
-        tag_name: ${{ needs.build.outputs.tag_name }}
-        name: Release ${{ needs.build.outputs.tag_name }}
-        body: |
-          🚀 Release of Titan Web Server.
-          
-          **Version**: ${{ needs.build.outputs.tag_name }}
-          **Commit**: ${{ github.sha }}
-          
-          📦 **Artifacts included:**
-          - .deb (Debian/Ubuntu)
-          - .rpm (RHEL/CentOS)
-        files: packages/*
+      - uses: actions/checkout@v4
+
+      - name: Download Packages
+        uses: actions/download-artifact@v4
+        with:
+          name: titan-web-server-packages
+          path: packages/
+
+      - name: Create Release & Tag 🚀
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.build.outputs.tag_name }}
+          name: Release ${{ needs.build.outputs.tag_name }}
+          body: |
+            🚀 Release of Titan Web Server.
+            
+            **Version**: ${{ needs.build.outputs.tag_name }}
+            **Commit**: ${{ github.sha }}
+            
+            📦 **Artifacts included:**
+            - .deb (Debian/Ubuntu)
+            - .rpm (RHEL/CentOS)
+          files: packages/*
