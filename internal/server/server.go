@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/crypto/acme/autocert"
+
 	"github.com/quic-go/quic-go/http3"
 	"github.com/yookoala/gofast"
 
@@ -508,11 +510,59 @@ func (s *Server) Start() error {
 	// Error channel to catch failures from goroutines
 	errChan := make(chan error)
 
+	// Build certificate map for SNI and prepare ACME
+	certMap := make(map[string]*tls.Certificate)
+	ocspManager := NewOCSPManager()
+	hasOCSP := false
+	var acmeDomains []string
+
+	for _, site := range s.Config.Sites {
+		if site.SSL != nil && site.SSL.Enabled {
+			if site.SSL.Provider == "manual" {
+				cert, err := tls.LoadX509KeyPair(site.SSL.CertFile, site.SSL.KeyFile)
+				if err != nil {
+					return fmt.Errorf("error loading cert for %s: %w", site.Domain, err)
+				}
+
+				domain := strings.ToLower(site.Domain)
+				certMap[domain] = &cert
+
+				if site.SSL.OCSPStapling {
+					ocspManager.AddCertificate(domain, &cert)
+					hasOCSP = true
+				}
+			} else if site.SSL.Provider == "letsencrypt" {
+				acmeDomains = append(acmeDomains, site.Domain)
+			}
+		}
+	}
+
+	var m *autocert.Manager
+	if len(acmeDomains) > 0 {
+		// Ensure certs directory exists
+		if err := os.MkdirAll("certs", 0700); err != nil {
+			fmt.Printf("Warning: Failed to create certs directory: %v\n", err)
+		}
+
+		m = &autocert.Manager{
+			Cache:      autocert.DirCache("certs"),
+			Prompt:     autocert.AcceptTOS,
+			HostPolicy: autocert.HostWhitelist(acmeDomains...),
+		}
+		fmt.Printf("ACME/Let's Encrypt enabled for: %v\n", acmeDomains)
+	}
+
 	// Start HTTP Server if configured
 	if s.Config.HTTPPort != "" {
 		go func() {
 			fmt.Printf("Starting HTTP server on %s\n", s.Config.HTTPPort)
-			if err := http.ListenAndServe(s.Config.HTTPPort, s); err != nil {
+			var handler http.Handler = s
+			if m != nil {
+				// Wrap with ACME handler to intercept challenges
+				handler = m.HTTPHandler(s)
+			}
+
+			if err := http.ListenAndServe(s.Config.HTTPPort, handler); err != nil {
 				errChan <- fmt.Errorf("HTTP server failed: %w", err)
 			}
 		}()
@@ -520,101 +570,79 @@ func (s *Server) Start() error {
 
 	// Start HTTPS Server if configured
 	if s.Config.HTTPSPort != "" {
-		// Build certificate map for SNI
-		certMap := make(map[string]*tls.Certificate)
-		ocspManager := NewOCSPManager()
-		hasManualCerts := false
-		hasOCSP := false
-
-		for _, site := range s.Config.Sites {
-			if site.SSL != nil && site.SSL.Enabled {
-				if site.SSL.Provider == "manual" {
-					cert, err := tls.LoadX509KeyPair(site.SSL.CertFile, site.SSL.KeyFile)
-					if err != nil {
-						return fmt.Errorf("error loading cert for %s: %w", site.Domain, err)
-					}
-
-					domain := strings.ToLower(site.Domain)
-					certMap[domain] = &cert
-					hasManualCerts = true
-
-					if site.SSL.OCSPStapling {
-						ocspManager.AddCertificate(domain, &cert)
-						hasOCSP = true
-					}
-				} else if site.SSL.Provider == "letsencrypt" {
-					// Placeholder for ACME/Lego integration
-					fmt.Printf("Warning: ACME/Let's Encrypt provider for %s is not yet implemented. HTTPS will not be available for this domain.\n", site.Domain)
-				}
-			}
-		}
-
 		if hasOCSP {
 			ocspManager.Start()
 		}
 
-		if hasManualCerts {
+		// Always start HTTPS if configured (might be for ACME only)
+		go func() {
+			var tlsConfig *tls.Config
+			if s.Config.Security != nil && s.Config.Security.FIPSCompliant {
+				tlsConfig = getFIPSTLSConfig()
+				fmt.Println("Security: FIPS Compliance constraints enabled (TLS 1.2+, Strong Ciphers).")
+			} else {
+				tlsConfig = &tls.Config{}
+			}
+
+			tlsConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+				domain := strings.ToLower(hello.ServerName)
+
+				// 1. Check Manual Certs
+				if cert, ok := certMap[domain]; ok {
+					// Apply OCSP Staple if available
+					if staple := ocspManager.GetStaple(domain); staple != nil {
+						// Return a shallow copy with the staple
+						certWithStaple := *cert
+						certWithStaple.OCSPStaple = staple
+						return &certWithStaple, nil
+					}
+					return cert, nil
+				}
+
+				// 2. Check ACME
+				if m != nil {
+					return m.GetCertificate(hello)
+				}
+
+				return nil, errors.New("certificate not found for domain")
+			}
+			tlsConfig.NextProtos = []string{"h3", "http/1.1"} // Advertise HTTP/3 support
+
+			// Start HTTP/3 (QUIC) Server
+			quicServer := &http3.Server{
+				Addr:      s.Config.HTTPSPort,
+				Handler:   s,
+				TLSConfig: tlsConfig,
+			}
 			go func() {
-				var tlsConfig *tls.Config
-				if s.Config.Security != nil && s.Config.Security.FIPSCompliant {
-					tlsConfig = getFIPSTLSConfig()
-					fmt.Println("Security: FIPS Compliance constraints enabled (TLS 1.2+, Strong Ciphers).")
-				} else {
-					tlsConfig = &tls.Config{}
-				}
-
-				tlsConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-					domain := strings.ToLower(hello.ServerName)
-					if cert, ok := certMap[domain]; ok {
-						// Apply OCSP Staple if available
-						if staple := ocspManager.GetStaple(domain); staple != nil {
-							// Return a shallow copy with the staple
-							certWithStaple := *cert
-							certWithStaple.OCSPStaple = staple
-							return &certWithStaple, nil
-						}
-						return cert, nil
-					}
-					return nil, errors.New("certificate not found for domain")
-				}
-				tlsConfig.NextProtos = []string{"h3", "http/1.1"} // Advertise HTTP/3 support
-
-				// Start HTTP/3 (QUIC) Server
-				quicServer := &http3.Server{
-					Addr:      s.Config.HTTPSPort,
-					Handler:   s,
-					TLSConfig: tlsConfig,
-				}
-				go func() {
-					fmt.Printf("Starting HTTP/3 (QUIC) server on %s\n", s.Config.HTTPSPort)
-					if err := quicServer.ListenAndServe(); err != nil {
-						fmt.Printf("HTTP/3 server error: %v\n", err)
-					}
-				}()
-
-				// Start HTTPS (TCP) Server
-				server := &http.Server{
-					Addr:      s.Config.HTTPSPort,
-					Handler:   http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-						// Advertise HTTP/3 via Alt-Svc header
-						// Port needs to be extracted from HTTPSPort string (e.g. ":8443" -> "8443")
-						port := s.Config.HTTPSPort
-						if strings.HasPrefix(port, ":") {
-							port = port[1:]
-						}
-						w.Header().Set("Alt-Svc", fmt.Sprintf(`h3=":%s"; ma=2592000`, port))
-						s.ServeHTTP(w, r)
-					}),
-					TLSConfig: tlsConfig,
-				}
-
-				fmt.Printf("Starting HTTPS server on %s (SNI Enabled)\n", s.Config.HTTPSPort)
-				// ListenAndServeTLS with empty strings uses the Config.TLSConfig
-				if err := server.ListenAndServeTLS("", ""); err != nil {
-					errChan <- fmt.Errorf("HTTPS server failed: %w", err)
+				fmt.Printf("Starting HTTP/3 (QUIC) server on %s\n", s.Config.HTTPSPort)
+				if err := quicServer.ListenAndServe(); err != nil {
+					fmt.Printf("HTTP/3 server error: %v\n", err)
 				}
 			}()
-		}
+
+			// Start HTTPS (TCP) Server
+			server := &http.Server{
+				Addr:      s.Config.HTTPSPort,
+				Handler:   http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					// Advertise HTTP/3 via Alt-Svc header
+					// Port needs to be extracted from HTTPSPort string (e.g. ":8443" -> "8443")
+					port := s.Config.HTTPSPort
+					if strings.HasPrefix(port, ":") {
+						port = port[1:]
+					}
+					w.Header().Set("Alt-Svc", fmt.Sprintf(`h3=":%s"; ma=2592000`, port))
+					s.ServeHTTP(w, r)
+				}),
+				TLSConfig: tlsConfig,
+			}
+
+			fmt.Printf("Starting HTTPS server on %s (SNI Enabled)\n", s.Config.HTTPSPort)
+			// ListenAndServeTLS with empty strings uses the Config.TLSConfig
+			if err := server.ListenAndServeTLS("", ""); err != nil {
+				errChan <- fmt.Errorf("HTTPS server failed: %w", err)
+			}
+		}()
 	}
 
 	// Block until a server fails
