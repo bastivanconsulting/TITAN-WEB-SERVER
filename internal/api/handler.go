@@ -11,6 +11,8 @@ import (
 type ConfigManager interface {
 	UpdateConfig(cfg *config.Config) error
 	GetConfig() *config.Config
+	JoinCluster(nodeID, addr string) error
+	GetClusterStatus() map[string]interface{}
 }
 
 // Handler handles API requests
@@ -25,7 +27,7 @@ func NewHandler(manager ConfigManager) *Handler {
 	}
 }
 
-// ServeHTTP handles /api/config requests
+// ServeHTTP handles API requests
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/api/config" {
 		switch r.Method {
@@ -36,6 +38,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		default:
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
+		return
+	}
+	if r.URL.Path == "/api/cluster/join" && r.Method == http.MethodPost {
+		h.handleClusterJoin(w, r)
+		return
+	}
+	if r.URL.Path == "/api/cluster/status" && r.Method == http.MethodGet {
+		h.handleClusterStatus(w, r)
 		return
 	}
 	http.NotFound(w, r)
@@ -62,4 +72,29 @@ func (h *Handler) handlePostConfig(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Configuration updated successfully"))
+}
+
+func (h *Handler) handleClusterJoin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID   string `json:"id"`
+		Addr string `json:"addr"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.Manager.JoinCluster(req.ID, req.Addr); err != nil {
+		http.Error(w, "Failed to join cluster: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status": "ok"}`))
+}
+
+func (h *Handler) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
+	status := h.Manager.GetClusterStatus()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(status)
 }
