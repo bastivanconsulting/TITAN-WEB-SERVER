@@ -670,7 +670,8 @@ func (s *Server) Start() error {
 	var m *autocert.Manager
 	if len(acmeDomains) > 0 {
 		// Ensure certs directory exists
-		if err := os.MkdirAll("certs", 0700); err != nil {
+		certDir := "/etc/titan/certs"
+		if err := os.MkdirAll(certDir, 0700); err != nil {
 			fmt.Printf("Warning: Failed to create certs directory: %v\n", err)
 		}
 
@@ -683,7 +684,7 @@ func (s *Server) Start() error {
 		}
 
 		m = &autocert.Manager{
-			Cache:      autocert.DirCache("certs"),
+			Cache:      autocert.DirCache(certDir),
 			Prompt:     autocert.AcceptTOS,
 			HostPolicy: autocert.HostWhitelist(acmeDomains...),
 			Email:      acmeEmail,

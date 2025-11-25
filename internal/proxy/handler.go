@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -103,7 +104,70 @@ func NewProxyHandler(opts ProxyOptions) (http.Handler, error) {
 		originalDirector := proxy.Director
 		proxy.Director = func(req *http.Request) {
 			originalDirector(req)
+			// Set headers to reflect the original request
 			req.Header.Set("X-Forwarded-Host", req.Host)
+			req.Host = targetURL.Host
+
+			// Set X-Real-IP
+			if ip, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
+				req.Header.Set("X-Real-IP", ip)
+			}
+		}
+
+		// Inject script into HTML responses
+		proxy.ModifyResponse = func(resp *http.Response) error {
+			// Check if the content type is HTML
+			contentType := resp.Header.Get("Content-Type")
+			if !strings.Contains(contentType, "text/html") {
+				return nil
+			}
+
+			// Read the original body
+			bodyBytes, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return err
+			}
+			resp.Body.Close()
+
+			// Decompress if gzipped
+			wasGzipped := false
+			if resp.Header.Get("Content-Encoding") == "gzip" {
+				wasGzipped = true
+				gz, err := gzip.NewReader(bytes.NewReader(bodyBytes))
+				if err != nil {
+					return err
+				}
+				bodyBytes, err = io.ReadAll(gz)
+				gz.Close()
+				if err != nil {
+					return err
+				}
+				resp.Header.Del("Content-Encoding")
+			}
+
+			// Inject the script
+			newBody := injectBefore(bodyBytes, []byte("</head>"), []byte(injectionScript))
+
+			// Re-compress if necessary
+			if wasGzipped {
+				var b bytes.Buffer
+				gz := gzip.NewWriter(&b)
+				if _, err := gz.Write(newBody); err != nil {
+					return err
+				}
+				if err := gz.Close(); err != nil {
+					return err
+				}
+				newBody = b.Bytes()
+				resp.Header.Set("Content-Encoding", "gzip")
+			}
+
+			// Update the response body
+			resp.Body = io.NopCloser(bytes.NewReader(newBody))
+			resp.Header.Set("Content-Length", strconv.Itoa(len(newBody)))
+			resp.ContentLength = int64(len(newBody))
+
+			return nil
 		}
 
 		// Inject script into HTML responses

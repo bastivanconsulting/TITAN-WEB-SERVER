@@ -14,7 +14,7 @@ func main() {
 	configFile := flag.String("config", "titan-server.conf", "Path to configuration file")
 	nodeID := flag.String("node-id", "", "Unique Node ID for the cluster")
 	raftAddr := flag.String("raft-addr", "127.0.0.1:9000", "Raft bind address")
-	raftDir := flag.String("raft-dir", "raft-data", "Raft data directory")
+	raftDir := flag.String("raft-dir", "/etc/titan/raft", "Raft data directory")
 	joinAddr := flag.String("join", "", "Address of a cluster node to join")
 	bootstrap := flag.Bool("bootstrap", false, "Bootstrap the cluster (only for the first node)")
 	flag.Parse()

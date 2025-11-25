@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -291,6 +292,42 @@ func TestProxyInjection(t *testing.T) {
 
 			tc.verify(t, resp, body)
 		})
+	}
+}
+
+func TestProxyHeaders(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		realIP := r.Header.Get("X-Real-IP")
+		forwardedHost := r.Header.Get("X-Forwarded-Host")
+		fmt.Fprintf(w, "Host:%s,X-Real-IP:%s,X-Forwarded-Host:%s", host, realIP, forwardedHost)
+	}))
+	defer backend.Close()
+
+	opts := proxy.ProxyOptions{
+		Targets: []string{backend.URL},
+		Cache:   nil,
+	}
+	proxyHandler, err := proxy.NewProxyHandler(opts)
+	if err != nil {
+		t.Fatalf("Failed to create proxy handler: %v", err)
+	}
+	server := httptest.NewServer(proxyHandler)
+	defer server.Close()
+
+	resp, err := http.Get(server.URL)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	backendURL, _ := url.Parse(backend.URL)
+	serverURL, _ := url.Parse(server.URL)
+
+	expectedBody := fmt.Sprintf("Host:%s,X-Real-IP:127.0.0.1,X-Forwarded-Host:%s", backendURL.Host, serverURL.Host)
+	if string(body) != expectedBody {
+		t.Errorf("Expected body '%s', got '%s'", expectedBody, body)
 	}
 }
 

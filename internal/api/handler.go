@@ -251,7 +251,7 @@ func (h *Handler) handleUploadSSL(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create directory
-	certDir := "certs/manual"
+	certDir := "/etc/titan/certs/manual"
 	if err := os.MkdirAll(certDir, 0700); err != nil {
 		http.Error(w, "Failed to create cert dir", http.StatusInternalServerError)
 		return
