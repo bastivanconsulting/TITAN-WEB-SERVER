@@ -30,6 +30,12 @@ import (
 	"titan-web-server/internal/tlsutil"
 )
 
+func (s *Server) debugLog(format string, v ...interface{}) {
+	if s.Debug {
+		log.Printf("[DEBUG] "+format, v...)
+	}
+}
+
 //go:embed templates/error.html
 var templateFS embed.FS
 
@@ -55,13 +61,14 @@ type Server struct {
 	AuthProvider  auth.Provider
 	Cache         cache.Cache
 	Logger        *Logger
+	Debug         bool
 	ClusterNode   *cluster.Node // Optional cluster node
 	phpHandlers   map[string]http.Handler
 	proxyHandlers map[string]http.Handler
 }
 
 // NewServer creates a new server instance
-func NewServer(cfg *config.Config, configPath string) *Server {
+func NewServer(cfg *config.Config, configPath string, debug bool) *Server {
 	tpl, err := template.ParseFS(templateFS, "templates/error.html")
 	if err != nil {
 		// Fallback if template is missing or error
@@ -103,6 +110,7 @@ func NewServer(cfg *config.Config, configPath string) *Server {
 		Tpl:           tpl,
 		Cache:         c,
 		Logger:        logger,
+		Debug:         debug,
 		phpHandlers:   make(map[string]http.Handler),
 		proxyHandlers: make(map[string]http.Handler),
 	}
@@ -726,6 +734,7 @@ func (s *Server) Start() error {
 			HostPolicy: autocert.HostWhitelist(acmeDomains...),
 			Email:      acmeEmail,
 		}
+		s.debugLog("autocert manager configured with CacheDir: %s, HostPolicy: %v, Email: %s", certDir, acmeDomains, acmeEmail)
 		log.Printf("ACME/Let's Encrypt enabled for domains: %v (Email: %s)", acmeDomains, acmeEmail)
 	}
 
@@ -780,19 +789,23 @@ func (s *Server) Start() error {
 
 			tlsConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 				domain := strings.ToLower(hello.ServerName)
+				s.debugLog("GetCertificate called for domain: %s", domain)
 
 				// 1. Check Manually loaded certs from /etc/titan/certs/manual
 				s.mu.RLock()
 				manualCert, ok := s.Config.ManualCerts[domain]
 				s.mu.RUnlock()
 				if ok {
+					s.debugLog("Found manual certificate for %s in /etc/titan/certs/manual/", domain)
 					return manualCert, nil
 				}
 
 				// 2. Check Manual Certs from config file
 				if cert, ok := certMap[domain]; ok {
+					s.debugLog("Found manual certificate for %s in config file", domain)
 					// Apply OCSP Staple if available
 					if staple := ocspManager.GetStaple(domain); staple != nil {
+						s.debugLog("Applying OCSP staple for %s", domain)
 						// Return a shallow copy with the staple
 						certWithStaple := *cert
 						certWithStaple.OCSPStaple = staple
@@ -803,21 +816,24 @@ func (s *Server) Start() error {
 
 				// 3. Check ACME
 				if m != nil {
-					// Only use ACME if the domain is whitelisted/configured
-					// Autocert Manager HostPolicy handles this check, but GetCertificate might still run.
-					// We let Manager decide.
-					// Note: If Manager returns error, we fall through.
+					s.debugLog("Attempting to get certificate for %s from ACME/autocert", domain)
 					cert, err := m.GetCertificate(hello)
-					if err == nil {
+					if err != nil {
+						s.debugLog("autocert.GetCertificate for %s returned error: %v", domain, err)
+						// Fall through to default cert
+					} else {
+						s.debugLog("Successfully obtained certificate for %s from ACME/autocert", domain)
 						return cert, nil
 					}
 				}
 
 				// 4. Fallback to Default Self-Signed Cert
 				if defaultTLSCert != nil {
+					s.debugLog("No specific certificate found for %s. Falling back to default self-signed cert.", domain)
 					return defaultTLSCert, nil
 				}
 
+				s.debugLog("No certificate found for domain %s and no default certificate available.", domain)
 				return nil, errors.New("certificate not found for domain")
 			}
 			tlsConfig.NextProtos = []string{"h3", "http/1.1"} // Advertise HTTP/3 support

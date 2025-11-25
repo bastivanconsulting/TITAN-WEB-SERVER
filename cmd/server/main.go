@@ -17,6 +17,7 @@ func main() {
 	raftDir := flag.String("raft-dir", "/etc/titan/raft", "Raft data directory")
 	joinAddr := flag.String("join", "", "Address of a cluster node to join")
 	bootstrap := flag.Bool("bootstrap", false, "Bootstrap the cluster (only for the first node)")
+	debug := flag.Bool("debug", false, "Enable debug logging")
 	flag.Parse()
 
 	// Ensure raft dir exists
@@ -44,7 +45,7 @@ func main() {
 		}
 	}
 
-	srv := server.NewServer(cfg, *configFile)
+	srv := server.NewServer(cfg, *configFile, *debug)
 
 	if *nodeID != "" {
 		// Initialize Cluster Node
