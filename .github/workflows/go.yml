@@ -96,10 +96,9 @@ jobs:
       run: |
         mkdir -p scripts
         
-        # IMPORTANT: L'indentation ci-dessous est cruciale pour le YAML.
-        # Le parser YAML supprimera les espaces en début de ligne pour le script final.
-        
-        cat <<EOF > scripts/titan-server.service
+        # Création du service Systemd
+        # Utilisation de 'EOF' entre quotes pour éviter les soucis d'expansion
+        cat > scripts/titan-server.service << 'EOF'
         [Unit]
         Description=Titan Web Server
         Documentation=https://github.com/bastivanconsulting/WebServer
@@ -117,7 +116,8 @@ jobs:
         WantedBy=multi-user.target
         EOF
 
-        cat <<EOF > scripts/postinst.sh
+        # Script post-installation
+        cat > scripts/postinst.sh << 'EOF'
         #!/bin/bash
         if ! getent group titan > /dev/null; then
             groupadd -r titan
@@ -132,9 +132,10 @@ jobs:
         systemctl enable titan-server.service
         EOF
 
-        cat <<EOF > scripts/prerm.sh
+        # Script pré-suppression
+        cat > scripts/prerm.sh << 'EOF'
         #!/bin/bash
-        if [ "\$1" = "remove" ]; then
+        if [ "$1" = "remove" ]; then
             systemctl stop titan-server.service || :
             systemctl disable titan-server.service || :
             systemctl daemon-reload
@@ -147,7 +148,7 @@ jobs:
       run: |
         TAG_NAME=$(echo ${{ needs.build.outputs.tag_name }} | sed 's/^v//')
         
-        cat <<EOF > nfpm.yaml
+        cat > nfpm.yaml << EOF
         name: "titan-web-server"
         arch: "amd64"
         platform: "linux"
