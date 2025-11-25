@@ -27,7 +27,7 @@ func TestProxyCache(t *testing.T) {
 
 	// 3. Setup Proxy Handler
 	opts := proxy.ProxyOptions{
-		Target:   backend.URL,
+		Targets:  []string{backend.URL},
 		Cache:    c,
 		CacheTTL: 1 * time.Second,
 	}
@@ -104,7 +104,7 @@ func TestProxyCacheStatusCode(t *testing.T) {
 
 	c := cache.NewMemoryCache()
 	opts := proxy.ProxyOptions{
-		Target:   backend.URL,
+		Targets:  []string{backend.URL},
 		Cache:    c,
 		CacheTTL: 1 * time.Second,
 	}
@@ -166,7 +166,7 @@ func TestProxyCacheHeaders(t *testing.T) {
 
 			c := cache.NewMemoryCache()
 			opts := proxy.ProxyOptions{
-				Target:   backend.URL,
+				Targets:  []string{backend.URL},
 				Cache:    c,
 				CacheTTL: 1 * time.Second,
 			}
@@ -213,7 +213,7 @@ func TestProxyCacheLargeBody(t *testing.T) {
 
 	c := cache.NewMemoryCache()
 	opts := proxy.ProxyOptions{
-		Target:   backend.URL,
+		Targets:  []string{backend.URL},
 		Cache:    c,
 		CacheTTL: 1 * time.Second,
 	}

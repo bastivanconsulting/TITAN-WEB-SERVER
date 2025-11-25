@@ -9,6 +9,7 @@
         "::1"
     ],
     "log_dir": "/var/log/titan/",
+    "conf_dir": "conf.d/",
     "cache": null,
     "security": {
         "fips_compliant": true
