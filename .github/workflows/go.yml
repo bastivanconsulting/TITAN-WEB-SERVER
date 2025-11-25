@@ -1,18 +1,20 @@
 # .github/workflows/go.yml
 
-name: Go CI (Test, Build & Release)
+name: Go CI (Test, Build & Auto-Release)
 
 on:
   push:
     branches: [ "main" ]
-    tags:
-      - 'v*'
   pull_request:
     branches: [ "main" ]
 
+# ⚠️ INDISPENSABLE : Permet au workflow de créer des Releases et des Tags
+permissions:
+  contents: write
+
 jobs:
 
-  # JOB 1: Test et Build du binaire
+  # JOB 1: Test et Build
   build:
     runs-on: ubuntu-latest
     outputs:
@@ -34,11 +36,14 @@ jobs:
     - name: Build executable
       run: go build -v -o titan-web-server ./cmd/server/main.go
       
-    - name: Get Version/Tag
+    - name: Generate Auto Version
       id: get_version
       run: |
-        TAG_NAME=$(git describe --tags --always)
-        echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
+        # Génération automatique : v0.1.{Numéro de Build GitHub}
+        # Exemple : v0.1.42
+        AUTO_TAG="v0.1.${{ github.run_number }}"
+        echo "Version générée : $AUTO_TAG"
+        echo "tag=$AUTO_TAG" >> $GITHUB_OUTPUT
         
     - name: Upload Build Artifact
       uses: actions/upload-artifact@v4
@@ -52,7 +57,8 @@ jobs:
   package:
     runs-on: ubuntu-latest
     needs: build
-    if: success() && startsWith(github.ref, 'refs/tags/v')
+    # On exécute sur la branche main (plus besoin d'attendre un tag manuel)
+    if: success() && github.ref == 'refs/heads/main'
     steps:
     - uses: actions/checkout@v4
     
@@ -110,8 +116,8 @@ jobs:
 
     - name: Create nfpm configuration
       run: |
+        # On récupère la version générée automatiquement
         TAG_NAME=$(echo ${{ needs.build.outputs.tag_name }} | sed 's/^v//')
-        if [ "$TAG_NAME" == "" ]; then TAG_NAME="0.1.0-dev"; fi
         
         cat <<EOF > nfpm.yaml
         name: "titan-web-server"
@@ -168,11 +174,11 @@ jobs:
 
 # ----------------------------------------------------------------------------------
 
-  # JOB 3: Release
+  # JOB 3: Release Automatique
   release:
     runs-on: ubuntu-latest
-    needs: package
-    if: success() && startsWith(github.ref, 'refs/tags/v')
+    needs: [build, package]
+    if: success() && github.ref == 'refs/heads/main'
     steps:
     - uses: actions/checkout@v4
       
@@ -182,12 +188,15 @@ jobs:
         name: titan-web-server-packages
         path: packages/
         
-    - name: Create Release
+    - name: Create Release & Tag 🚀
       uses: softprops/action-gh-release@v2
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        tag_name: ${{ github.ref_name }}
-        name: Release ${{ github.ref_name }}
+        # C'est ici que la magie opère : 
+        # On force le nom du tag avec la version générée (ex: v0.1.42).
+        # L'action va CRÉER ce tag automatiquement s'il n'existe pas.
+        tag_name: ${{ needs.build.outputs.tag_name }}
+        name: Release ${{ needs.build.outputs.tag_name }}
         body: "Automatic release of Titan Web Server packages (.deb, .rpm)."
         files: packages/*
