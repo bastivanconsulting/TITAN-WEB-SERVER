@@ -432,6 +432,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Capture status code for logging
 	rw := NewResponseWriter(w)
 
+	// ACME Health Check for diagnostics
+	if r.URL.Path == "/.well-known/acme-challenge/healthz" {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+		return
+	}
+
 	// 0. Intercept API and Admin requests
 	// Note: Internal API for cluster sync bypasses normal auth for performance,
 	// but relies on the shared API key.
