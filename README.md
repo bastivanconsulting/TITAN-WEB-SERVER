@@ -1,6 +1,6 @@
 # TITAN WEB SERVER
 
-[![Go CI Status](https://github.com/bastivanconsulting/WebServer/actions/workflows/go-ci.yml/badge.svg?branch=main)](https://github.com/bastivanconsulting/WebServer/actions/workflows/go-ci.yml)
+[![Go CI Status](https://github.com/bastivanconsulting/WebServer/actions/workflows/go.yml/badge.svg?branch=main)](https://github.com/bastivanconsulting/WebServer/actions/workflows/go.yml)
 
 Bienvenue dans **Titan Web Server**, une solution ultra-performante et sécurisée pour héberger vos sites web et rediriger le trafic (Reverse Proxy). Ce serveur est conçu pour être **simple à utiliser**, même si vous n'avez aucune expérience en administration système.
 
