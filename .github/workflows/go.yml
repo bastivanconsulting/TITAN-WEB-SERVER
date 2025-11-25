@@ -1,0 +1,42 @@
+# This workflow will build a golang project
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
+
+name: Go CI (Test & Build)
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go 1.24.3
+      uses: actions/setup-go@v5
+      with:
+        # Correspond à la version dans go.mod
+        go-version: '1.24.3'
+
+    - name: Download Go dependencies (go mod download)
+      # Télécharge les dépendances pour assurer que les tests et la compilation trouvent tout
+      run: go mod download
+
+    - name: Run Tests 🧪
+      # Exécute tous les tests du projet, ce qui garantit que le cache, le proxy et les autres fonctions de base sont valides
+      run: go test -v ./...
+
+    - name: Build executable (titan-web-server)
+      # Compilation du binaire principal (l'exécutable qui sera distribué)
+      run: go build -v -o titan-web-server ./cmd/server/main.go
+      
+    - name: Upload Build Artifact
+      # Stocke le binaire compilé comme un "artifact" temporaire (utile pour une vérification manuelle)
+      uses: actions/upload-artifact@v4
+      with:
+        name: titan-web-server-linux-amd64
+        path: titan-web-server
