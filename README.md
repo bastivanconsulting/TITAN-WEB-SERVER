@@ -71,6 +71,7 @@ security {
 
 # Définition des Services HTTP
 http {
+    # Site statique avec SSL Let's Encrypt
     server {
         server_name www.example.com;
         ssl {
@@ -84,6 +85,39 @@ http {
     }
 }
 ```
+
+### Configuration d'un Site PHP
+
+Pour servir une application PHP, Titan délègue l'exécution à un processus **PHP-FPM** externe via FastCGI.
+
+**Exemple de bloc `server` pour PHP :**
+```nginx
+http {
+    # ... autres serveurs ...
+
+    server {
+        server_name my-php-app.local;
+
+        location / {
+            # Type de handler
+            type php;
+
+            # Chemin racine des fichiers (Document Root)
+            file_root "/var/www/my-php-app/public";
+
+            # Adresse du processus PHP-FPM
+            # Peut être une adresse TCP ou un socket Unix
+            proxy_target "127.0.0.1:9000";
+            # proxy_target "unix:/var/run/php/php8.1-fpm.sock";
+        }
+    }
+}
+```
+
+**Directives importantes pour PHP :**
+*   `type php;` : Indique à Titan de traiter les requêtes avec le handler PHP.
+*   `file_root "/path/to/your/app";` : Définit le `DOCUMENT_ROOT` de votre application. Titan cherchera `index.php` dans ce répertoire pour les requêtes de type `/`.
+*   `proxy_target "address";` : Spécifie comment se connecter à PHP-FPM. C'est l'équivalent de `fastcgi_pass` dans Nginx.
 
 ---
 

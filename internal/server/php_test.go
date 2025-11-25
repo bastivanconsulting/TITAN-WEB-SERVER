@@ -78,6 +78,7 @@ func TestNewPHPEndpoint(t *testing.T) {
 			handler := endpoint(inner)
 
 			httpReq := httptest.NewRequest("GET", "http://example.com"+tt.urlPath, nil)
+			httpReq.RemoteAddr = "192.0.2.1:12345"
 			req := gofast.NewRequest(httpReq)
 
 			// Initialize params because gofast.NewRequest might not do it?
@@ -111,6 +112,20 @@ func TestNewPHPEndpoint(t *testing.T) {
 			cleanRoot := filepath.Clean(tt.root)
 			if mockClient.LastReq.Params["DOCUMENT_ROOT"] != cleanRoot {
 				t.Errorf("Expected DOCUMENT_ROOT %s, got %s", cleanRoot, mockClient.LastReq.Params["DOCUMENT_ROOT"])
+			}
+
+			// Verify other params
+			if mockClient.LastReq.Params["REQUEST_METHOD"] != "GET" {
+				t.Errorf("Expected REQUEST_METHOD GET, got %s", mockClient.LastReq.Params["REQUEST_METHOD"])
+			}
+			if mockClient.LastReq.Params["REMOTE_ADDR"] != "192.0.2.1" {
+				t.Errorf("Expected REMOTE_ADDR 192.0.2.1, got %s", mockClient.LastReq.Params["REMOTE_ADDR"])
+			}
+			if mockClient.LastReq.Params["REMOTE_PORT"] != "12345" {
+				t.Errorf("Expected REMOTE_PORT 12345, got %s", mockClient.LastReq.Params["REMOTE_PORT"])
+			}
+			if mockClient.LastReq.Params["SERVER_NAME"] != "example.com" {
+				t.Errorf("Expected SERVER_NAME example.com, got %s", mockClient.LastReq.Params["SERVER_NAME"])
 			}
 		})
 	}
