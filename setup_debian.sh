@@ -98,18 +98,15 @@ log "Application des permissions..."
 chown -R $USER:$USER "$LOG_DIR"
 chown -R $USER:$USER "$RAFT_DIR"
 
-# Permissions de configuration: root propriétaire, www-data peut lire
-log "Permissions de configuration: root propriétaire, www-data peut lire..."
-chown -R root:$USER "$CONFIG_DIR"
-find "$CONFIG_DIR" -type d -exec chmod 750 {} \;
-find "$CONFIG_DIR" -type f -exec chmod 640 {} \;
+# Permissions de configuration et de certificats
+# L'utilisateur www-data a besoin d'un accès complet pour la configuration et les certificats (Let's Encrypt)
+log "Attribution de la propriété de $CONFIG_DIR à l'utilisateur $USER..."
+chown -R $USER:$USER "$CONFIG_DIR"
 
-# Permissions des certificats: www-data doit pouvoir écrire pour Let's Encrypt
-log "Permissions des certificats: www-data doit pouvoir écrire pour Let's Encrypt..."
-CERTS_DIR="$CONFIG_DIR/certs"
-chown -R $USER:$USER "$CERTS_DIR"
-find "$CERTS_DIR" -type d -exec chmod 750 {} \;
-find "$CERTS_DIR" -type f -exec chmod 640 {} \;
+# Définir des permissions sécurisées par défaut
+log "Définition de permissions sécurisées pour $CONFIG_DIR..."
+find "$CONFIG_DIR" -type d -exec chmod 750 {} \;  # rwxr-x---
+find "$CONFIG_DIR" -type f -exec chmod 640 {} \;  # rw-r-----
 
 
 # Systemd
