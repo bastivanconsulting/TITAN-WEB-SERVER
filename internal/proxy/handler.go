@@ -8,6 +8,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"titan-web-server/internal/cache"
@@ -18,7 +19,7 @@ type ErrorHandlerFunc func(w http.ResponseWriter, r *http.Request, err error)
 
 // ProxyOptions configures the proxy
 type ProxyOptions struct {
-	Target       string
+	Targets      []string
 	ErrorHandler ErrorHandlerFunc
 	Cache        cache.Cache
 	CacheTTL     time.Duration
@@ -67,41 +68,59 @@ func (rec *limitRecorder) Flush() {
 	}
 }
 
-// NewProxyHandler creates a standard ReverseProxy with optional caching
+// NewProxyHandler creates a standard ReverseProxy with optional caching and load balancing
 func NewProxyHandler(opts ProxyOptions) (http.Handler, error) {
-	targetURL, err := url.Parse(opts.Target)
-	if err != nil {
-		return nil, err
+	if len(opts.Targets) == 0 {
+		return nil, fmt.Errorf("no targets provided")
 	}
 
-	proxy := httputil.NewSingleHostReverseProxy(targetURL)
+	var proxies []*httputil.ReverseProxy
+	for _, target := range opts.Targets {
+		targetURL, err := url.Parse(target)
+		if err != nil {
+			return nil, err
+		}
 
-	// Custom Director modification
-	originalDirector := proxy.Director
-	proxy.Director = func(req *http.Request) {
-		originalDirector(req)
-		req.Header.Set("X-Forwarded-Host", req.Host)
+		proxy := httputil.NewSingleHostReverseProxy(targetURL)
+
+		// Custom Director modification
+		originalDirector := proxy.Director
+		proxy.Director = func(req *http.Request) {
+			originalDirector(req)
+			req.Header.Set("X-Forwarded-Host", req.Host)
+		}
+
+		if opts.ErrorHandler != nil {
+			proxy.ErrorHandler = opts.ErrorHandler
+		}
+		proxies = append(proxies, proxy)
 	}
 
-	if opts.ErrorHandler != nil {
-		proxy.ErrorHandler = opts.ErrorHandler
-	}
+	// Round-robin counter
+	var counter uint64
 
-	// If no cache is configured, return the raw proxy
+	// Main Proxy Handler
+	proxyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Select target (Round Robin)
+		idx := atomic.AddUint64(&counter, 1) % uint64(len(proxies))
+		proxies[idx].ServeHTTP(w, r)
+	})
+
+	// If no cache is configured, return the raw proxy handler
 	if opts.Cache == nil {
-		return proxy, nil
+		return proxyHandler, nil
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// WebSocket Support: Skip caching and recorder for WebSockets
 		if strings.ToLower(r.Header.Get("Upgrade")) == "websocket" {
-			proxy.ServeHTTP(w, r)
+			proxyHandler.ServeHTTP(w, r)
 			return
 		}
 
 		// Only cache GET requests
 		if r.Method != http.MethodGet {
-			proxy.ServeHTTP(w, r)
+			proxyHandler.ServeHTTP(w, r)
 			return
 		}
 
@@ -132,7 +151,7 @@ func NewProxyHandler(opts ProxyOptions) (http.Handler, error) {
 			limit:          maxCacheSize,
 		}
 
-		proxy.ServeHTTP(rec, r)
+		proxyHandler.ServeHTTP(rec, r)
 
 		// Cache valid responses if no overflow
 		if !rec.overflow && rec.statusCode >= 200 && rec.statusCode < 300 {

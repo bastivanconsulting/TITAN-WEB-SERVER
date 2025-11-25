@@ -26,6 +26,7 @@ import (
 	"titan-web-server/internal/cache"
 	"titan-web-server/internal/config"
 	"titan-web-server/internal/proxy"
+	"titan-web-server/internal/tlsutil"
 )
 
 //go:embed templates/error.html
@@ -235,7 +236,8 @@ func (s *Server) initHandlersLocked() error {
 				s.phpHandlers[key] = handler
 
 			case "proxy":
-				key := route.ProxyTarget
+				// Generate key from all upstreams to handle load balancing groups
+				key := strings.Join(route.Upstreams, ",")
 				if _, exists := s.proxyHandlers[key]; exists {
 					continue
 				}
@@ -245,14 +247,14 @@ func (s *Server) initHandlersLocked() error {
 				}
 
 				opts := proxy.ProxyOptions{
-					Target:       route.ProxyTarget,
+					Targets:      route.Upstreams,
 					ErrorHandler: errorHandler,
 					Cache:        s.Cache,
 					CacheTTL:     60 * time.Second, // Default TTL
 				}
 				proxyHandler, err := proxy.NewProxyHandler(opts)
 				if err != nil {
-					return fmt.Errorf("error initializing proxy for %s: %v", route.ProxyTarget, err)
+					return fmt.Errorf("error initializing proxy for %s: %v", key, err)
 				}
 				s.proxyHandlers[key] = proxyHandler
 			}
@@ -274,7 +276,7 @@ func (s *Server) getPHPHandler(route *config.Route) http.Handler {
 func (s *Server) getProxyHandler(route *config.Route) http.Handler {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	key := route.ProxyTarget
+	key := strings.Join(route.Upstreams, ",")
 	if h, ok := s.proxyHandlers[key]; ok {
 		return h
 	}
@@ -516,6 +518,19 @@ func (s *Server) Start() error {
 	hasOCSP := false
 	var acmeDomains []string
 
+	// Ensure default self-signed certs exist
+	defaultCert := "server.crt"
+	defaultKey := "server.key"
+	if err := tlsutil.EnsureDefaultCert(defaultCert, defaultKey); err != nil {
+		fmt.Printf("Warning: Could not generate default self-signed certs: %v\n", err)
+	}
+
+	// Load Default Cert
+	var defaultTLSCert *tls.Certificate
+	if defCert, err := tls.LoadX509KeyPair(defaultCert, defaultKey); err == nil {
+		defaultTLSCert = &defCert
+	}
+
 	for _, site := range s.Config.Sites {
 		if site.SSL != nil && site.SSL.Enabled {
 			if site.SSL.Provider == "manual" {
@@ -601,7 +616,19 @@ func (s *Server) Start() error {
 
 				// 2. Check ACME
 				if m != nil {
-					return m.GetCertificate(hello)
+					// Only use ACME if the domain is whitelisted/configured
+					// Autocert Manager HostPolicy handles this check, but GetCertificate might still run.
+					// We let Manager decide.
+					// Note: If Manager returns error, we fall through.
+					cert, err := m.GetCertificate(hello)
+					if err == nil {
+						return cert, nil
+					}
+				}
+
+				// 3. Fallback to Default Self-Signed Cert
+				if defaultTLSCert != nil {
+					return defaultTLSCert, nil
 				}
 
 				return nil, errors.New("certificate not found for domain")

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
 // Config represents the global configuration
@@ -16,6 +17,7 @@ type Config struct {
 	AdminPass      string          `json:"admin_pass"`       // Password for login (plaintext for MVP)
 	AdminAllowlist []string        `json:"admin_allowlist"`  // IPs allowed to access admin API
 	LogDir         string          `json:"log_dir"`          // Directory for log files (default: /var/log/titan/)
+	ConfDir        string          `json:"conf_dir"`         // Directory for additional site configs (e.g. "conf/sites.d")
 	Cache          *Cache          `json:"cache"`            // Cache configuration
 	Security       *GlobalSecurity `json:"security"`         // Global security settings
 	Sites          []Site          `json:"sites"`
@@ -35,8 +37,8 @@ func (c *Config) Validate() error {
 			if route.Path == "" {
 				return fmt.Errorf("site %s route #%d missing path", site.Domain, j)
 			}
-			if route.Type == "proxy" && route.ProxyTarget == "" {
-				return fmt.Errorf("site %s route %s missing proxy_target", site.Domain, route.Path)
+			if route.Type == "proxy" && route.ProxyTarget == "" && len(route.Upstreams) == 0 {
+				return fmt.Errorf("site %s route %s missing proxy_target or upstreams", site.Domain, route.Path)
 			}
 			if (route.Type == "static" || route.Type == "php") && route.FileRoot == "" {
 				return fmt.Errorf("site %s route %s missing file_root", site.Domain, route.Path)
@@ -85,13 +87,14 @@ type HSTSConfig struct {
 
 // Route represents a path rule
 type Route struct {
-	Path        string `json:"path"`         // e.g., "/" or "/api"
-	Type        string `json:"type"`         // "proxy" or "static"
-	ProxyTarget string `json:"proxy_target"` // e.g., "http://localhost:8080"
-	FileRoot    string `json:"file_root"`    // e.g., "/var/www/html"
+	Path        string   `json:"path"`                  // e.g., "/" or "/api"
+	Type        string   `json:"type"`                  // "proxy" or "static"
+	ProxyTarget string   `json:"proxy_target,omitempty"`// Single target (legacy/simple)
+	Upstreams   []string `json:"upstreams,omitempty"`   // Load balancing targets
+	FileRoot    string   `json:"file_root"`             // e.g., "/var/www/html"
 }
 
-// LoadConfig loads configuration from a JSON file
+// LoadConfig loads configuration from a JSON file and optional include directory
 func LoadConfig(filename string) (*Config, error) {
 	file, err := os.Open(filename)
 	if err != nil {
@@ -105,5 +108,55 @@ func LoadConfig(filename string) (*Config, error) {
 		return nil, err
 	}
 
+	// Normalize routes: migrate ProxyTarget to Upstreams if empty
+	for i := range cfg.Sites {
+		for j := range cfg.Sites[i].Routes {
+			route := &cfg.Sites[i].Routes[j]
+			if route.ProxyTarget != "" && len(route.Upstreams) == 0 {
+				route.Upstreams = []string{route.ProxyTarget}
+			}
+		}
+	}
+
+	// Load additional configs if ConfDir is set
+	if cfg.ConfDir != "" {
+		matches, err := filepath.Glob(filepath.Join(cfg.ConfDir, "*.json"))
+		if err == nil {
+			for _, match := range matches {
+				siteCfg, err := loadSiteConfig(match)
+				if err != nil {
+					fmt.Printf("Warning: failed to load config from %s: %v\n", match, err)
+					continue
+				}
+				cfg.Sites = append(cfg.Sites, siteCfg...)
+			}
+		}
+	}
+
 	return cfg, nil
+}
+
+func loadSiteConfig(filename string) ([]Site, error) {
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	// Try loading as a list of sites first
+	var sites []Site
+	decoder := json.NewDecoder(file)
+	if err := decoder.Decode(&sites); err == nil {
+		return sites, nil
+	}
+
+	// If failed, maybe it's a single site object?
+	file.Seek(0, 0)
+	var site Site
+	decoder = json.NewDecoder(file)
+	if err := decoder.Decode(&site); err == nil {
+		return []Site{site}, nil
+	}
+
+	return nil, fmt.Errorf("could not decode site config")
 }
