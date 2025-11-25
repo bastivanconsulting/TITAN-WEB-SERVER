@@ -13,6 +13,7 @@ import (
 type Config struct {
 	HTTPPort       string          `json:"http_port"`        // e.g. ":80"
 	HTTPSPort      string          `json:"https_port"`       // e.g. ":443"
+	MaxThreads     int             `json:"max_threads"`      // Max number of OS threads
 	AdminAPIKey    string          `json:"admin_api_key"`    // API Key for management
 	AdminUser      string          `json:"admin_user"`       // Username for login
 	AdminPass      string          `json:"admin_pass"`       // Password for login (plaintext for MVP)
