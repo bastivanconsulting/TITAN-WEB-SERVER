@@ -22,7 +22,7 @@ fi
 
 # Configuration
 GO_VERSION="1.24.0"
-INSTALL_DIR="/usr/local/bin"
+INSTALL_DIR="/usr/local/sbin"
 CONFIG_DIR="/etc/titan"
 LOG_DIR="/var/log/titan"
 RAFT_DIR="/var/lib/titan/raft"
@@ -59,8 +59,8 @@ if [ ! -f "go.mod" ]; then
     error "Le fichier go.mod est introuvable. Assurez-vous d'exécuter ce script depuis la racine du dépôt."
 fi
 
-/usr/local/go/bin/go mod tidy
-/usr/local/go/bin/go build -o titan-web-server cmd/server/main.go
+go mod tidy
+go build -o titan-web-server cmd/server/main.go
 
 if [ ! -f "titan-web-server" ]; then
     error "La compilation a échoué."
