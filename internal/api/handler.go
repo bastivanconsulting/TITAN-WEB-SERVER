@@ -17,6 +17,7 @@ type ConfigManager interface {
 	GetConfig() *config.Config
 	JoinCluster(nodeID, addr string) error
 	GetClusterStatus() map[string]interface{}
+	RenewLetsEncrypt(domain string) error
 }
 
 // Handler handles API requests
@@ -86,6 +87,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if path == "/api/ssl/toggle" && r.Method == http.MethodPost {
 		h.handleToggleSSL(w, r)
+		return
+	}
+	if path == "/api/letsencrypt/renew" && r.Method == http.MethodPost {
+		h.handleRenewLetsEncrypt(w, r)
 		return
 	}
 
@@ -369,4 +374,27 @@ func (h *Handler) handleToggleSSL(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status": "updated"}`))
+}
+
+func (h *Handler) handleRenewLetsEncrypt(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Domain string `json:"domain"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	if req.Domain == "" {
+		http.Error(w, "Domain is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.Manager.RenewLetsEncrypt(req.Domain); err != nil {
+		http.Error(w, "Failed to renew certificate: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status": "renewal-triggered"}`))
 }

@@ -107,6 +107,7 @@ find "$CONFIG_DIR" -type f -exec chmod 640 {} \;
 # Permissions des certificats: www-data doit pouvoir écrire pour Let's Encrypt
 log "Permissions des certificats: www-data doit pouvoir écrire pour Let's Encrypt..."
 CERTS_DIR="$CONFIG_DIR/certs"
+mkdir -p "$CERTS_DIR/manual"
 chown -R $USER:$USER "$CERTS_DIR"
 find "$CERTS_DIR" -type d -exec chmod 750 {} \;
 find "$CERTS_DIR" -type f -exec chmod 640 {} \;

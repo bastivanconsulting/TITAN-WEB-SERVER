@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -28,6 +29,25 @@ import (
 	"titan-web-server/internal/proxy"
 	"titan-web-server/internal/tlsutil"
 )
+
+func (s *Server) debugLog(format string, v ...interface{}) {
+	if s.Debug {
+		log.Printf("[DEBUG] "+format, v...)
+	}
+}
+
+// acmeHealthCheckWrapper wraps an http.Handler to add a diagnostic endpoint
+// for the ACME challenge. This must be wrapped *before* the autocert handler.
+func acmeHealthCheckWrapper(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/acme-challenge/healthz" {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("OK"))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 //go:embed templates/error.html
 var templateFS embed.FS
@@ -54,13 +74,15 @@ type Server struct {
 	AuthProvider  auth.Provider
 	Cache         cache.Cache
 	Logger        *Logger
+	Debug         bool
+	autocertManager *autocert.Manager
 	ClusterNode   *cluster.Node // Optional cluster node
 	phpHandlers   map[string]http.Handler
 	proxyHandlers map[string]http.Handler
 }
 
 // NewServer creates a new server instance
-func NewServer(cfg *config.Config, configPath string) *Server {
+func NewServer(cfg *config.Config, configPath string, debug bool) *Server {
 	tpl, err := template.ParseFS(templateFS, "templates/error.html")
 	if err != nil {
 		// Fallback if template is missing or error
@@ -102,6 +124,7 @@ func NewServer(cfg *config.Config, configPath string) *Server {
 		Tpl:           tpl,
 		Cache:         c,
 		Logger:        logger,
+		Debug:         debug,
 		phpHandlers:   make(map[string]http.Handler),
 		proxyHandlers: make(map[string]http.Handler),
 	}
@@ -424,6 +447,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rw := NewResponseWriter(w)
 
 	// 0. Intercept API and Admin requests
+	// Note: Internal API for cluster sync bypasses normal auth for performance,
+	// but relies on the shared API key.
+	if strings.HasPrefix(r.URL.Path, "/api/internal/certs/") {
+		s.handleCertSync(rw, r)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		s.handleAPI(rw, r)
 		return
@@ -709,31 +738,54 @@ func (s *Server) Start() error {
 			}
 		}
 
+		if acmeEmail == "" {
+			log.Fatalf("ACME/Let's Encrypt is enabled but no email address is provided in any site configuration. This is required by Let's Encrypt TOS.")
+		}
+
 		m = &autocert.Manager{
 			Cache:      autocert.DirCache(certDir),
 			Prompt:     autocert.AcceptTOS,
 			HostPolicy: autocert.HostWhitelist(acmeDomains...),
 			Email:      acmeEmail,
 		}
-		if acmeEmail != "" {
-			fmt.Printf("ACME/Let's Encrypt enabled for: %v with email %s\n", acmeDomains, acmeEmail)
-		} else {
-			fmt.Printf("ACME/Let's Encrypt enabled for: %v (no email provided)\n", acmeDomains)
-		}
+		s.autocertManager = m
+		s.debugLog("autocert manager configured with CacheDir: %s, HostPolicy: %v, Email: %s", certDir, acmeDomains, acmeEmail)
+		log.Printf("ACME/Let's Encrypt enabled for domains: %v (Email: %s)", acmeDomains, acmeEmail)
 	}
 
-	// Start HTTP Server if configured
+	// Start HTTP Server
+	httpPort80Configured := s.Config.HTTPPort == ":80" || s.Config.HTTPPort == "80"
+
+	// If user configured an HTTP port, start that server.
 	if s.Config.HTTPPort != "" {
 		go func() {
-			fmt.Printf("Starting HTTP server on %s\n", s.Config.HTTPPort)
+			log.Printf("Starting HTTP server on %s\n", s.Config.HTTPPort)
 			var handler http.Handler = s
 			if m != nil {
-				// Wrap with ACME handler to intercept challenges
-				handler = m.HTTPHandler(s)
+				// If the user's server is on port 80, autocert can use it.
+				// Otherwise, autocert will need its own server (started below).
+				handler = m.HTTPHandler(handler)
 			}
+			// Always wrap with health check
+			finalHandler := acmeHealthCheckWrapper(handler)
+			if err := http.ListenAndServe(s.Config.HTTPPort, finalHandler); err != nil {
+				errChan <- fmt.Errorf("HTTP server on %s failed: %w", s.Config.HTTPPort, err)
+			}
+		}()
+	}
 
-			if err := http.ListenAndServe(s.Config.HTTPPort, handler); err != nil {
-				errChan <- fmt.Errorf("HTTP server failed: %w", err)
+	// If ACME is enabled and no server is running on port 80, start one.
+	// This is required for the HTTP-01 challenge.
+	if m != nil && !httpPort80Configured {
+		go func() {
+			log.Println("Starting dedicated ACME challenge server on :80")
+			// m.HTTPHandler(nil) handles challenges and redirects other HTTP -> HTTPS
+			handler := m.HTTPHandler(nil)
+			finalHandler := acmeHealthCheckWrapper(handler)
+			err := http.ListenAndServe(":80", finalHandler)
+			if err != nil {
+				// Don't fail fatally, but log a clear warning.
+				log.Printf("WARNING: Could not start ACME challenge server on port 80: %v. Let's Encrypt may fail.", err)
 			}
 		}()
 	}
@@ -756,19 +808,23 @@ func (s *Server) Start() error {
 
 			tlsConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 				domain := strings.ToLower(hello.ServerName)
+				s.debugLog("GetCertificate called for domain: %s", domain)
 
 				// 1. Check Manually loaded certs from /etc/titan/certs/manual
 				s.mu.RLock()
 				manualCert, ok := s.Config.ManualCerts[domain]
 				s.mu.RUnlock()
 				if ok {
+					s.debugLog("Found manual certificate for %s in /etc/titan/certs/manual/", domain)
 					return manualCert, nil
 				}
 
 				// 2. Check Manual Certs from config file
 				if cert, ok := certMap[domain]; ok {
+					s.debugLog("Found manual certificate for %s in config file", domain)
 					// Apply OCSP Staple if available
 					if staple := ocspManager.GetStaple(domain); staple != nil {
+						s.debugLog("Applying OCSP staple for %s", domain)
 						// Return a shallow copy with the staple
 						certWithStaple := *cert
 						certWithStaple.OCSPStaple = staple
@@ -779,21 +835,24 @@ func (s *Server) Start() error {
 
 				// 3. Check ACME
 				if m != nil {
-					// Only use ACME if the domain is whitelisted/configured
-					// Autocert Manager HostPolicy handles this check, but GetCertificate might still run.
-					// We let Manager decide.
-					// Note: If Manager returns error, we fall through.
+					s.debugLog("Attempting to get certificate for %s from ACME/autocert", domain)
 					cert, err := m.GetCertificate(hello)
-					if err == nil {
+					if err != nil {
+						s.debugLog("autocert.GetCertificate for %s returned error: %v", domain, err)
+						// Fall through to default cert
+					} else {
+						s.debugLog("Successfully obtained certificate for %s from ACME/autocert", domain)
 						return cert, nil
 					}
 				}
 
 				// 4. Fallback to Default Self-Signed Cert
 				if defaultTLSCert != nil {
+					s.debugLog("No specific certificate found for %s. Falling back to default self-signed cert.", domain)
 					return defaultTLSCert, nil
 				}
 
+				s.debugLog("No certificate found for domain %s and no default certificate available.", domain)
 				return nil, errors.New("certificate not found for domain")
 			}
 			tlsConfig.NextProtos = []string{"h3", "http/1.1"} // Advertise HTTP/3 support
@@ -946,4 +1005,62 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+}
+
+func (s *Server) handleCertSync(w http.ResponseWriter, r *http.Request) {
+	s.mu.RLock()
+	node := s.ClusterNode
+	apiKey := s.Config.AdminAPIKey
+	s.mu.RUnlock()
+
+	if node == nil {
+		http.Error(w, "Clustering not enabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Authenticate request
+	if r.Header.Get("X-API-Key") != apiKey {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	leaderAddr := string(node.Raft.Leader())
+
+	switch r.URL.Path {
+	case cluster.SyncEndpoint:
+		// This is a follower receiving a manifest from the leader
+		node.HandleSyncRequest(w, r, leaderAddr, apiKey)
+	case cluster.FileEndpoint:
+		// This is the leader serving a file to a follower
+		node.HandleFileRequest(w, r)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (s *Server) RenewLetsEncrypt(domain string) error {
+	s.mu.RLock()
+	m := s.autocertManager
+	s.mu.RUnlock()
+
+	if m == nil {
+		return errors.New("Let's Encrypt is not enabled")
+	}
+
+	s.debugLog("Manual renewal triggered for domain: %s", domain)
+
+	// This is a bit of a hack. Autocert doesn't expose a direct "renew" method.
+	// We can force it by creating a new ClientHello and calling GetCertificate.
+	// This will trigger the renewal logic if the cert is missing or expiring.
+	go func() {
+		hello := &tls.ClientHelloInfo{ServerName: domain}
+		_, err := m.GetCertificate(hello)
+		if err != nil {
+			s.debugLog("Manual renewal for %s failed: %v", domain, err)
+		} else {
+			s.debugLog("Manual renewal for %s completed.", domain)
+		}
+	}()
+
+	return nil
 }
