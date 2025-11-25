@@ -729,18 +729,35 @@ func (s *Server) Start() error {
 		log.Printf("ACME/Let's Encrypt enabled for domains: %v (Email: %s)", acmeDomains, acmeEmail)
 	}
 
-	// Start HTTP Server if configured
+	// Start HTTP Server
+	httpPort80Configured := s.Config.HTTPPort == ":80" || s.Config.HTTPPort == "80"
+
+	// If user configured an HTTP port, start that server.
 	if s.Config.HTTPPort != "" {
 		go func() {
-			fmt.Printf("Starting HTTP server on %s\n", s.Config.HTTPPort)
+			log.Printf("Starting HTTP server on %s\n", s.Config.HTTPPort)
 			var handler http.Handler = s
 			if m != nil {
-				// Wrap with ACME handler to intercept challenges
+				// If the user's server is on port 80, autocert can use it.
+				// Otherwise, autocert will need its own server (started below).
 				handler = m.HTTPHandler(s)
 			}
-
 			if err := http.ListenAndServe(s.Config.HTTPPort, handler); err != nil {
-				errChan <- fmt.Errorf("HTTP server failed: %w", err)
+				errChan <- fmt.Errorf("HTTP server on %s failed: %w", s.Config.HTTPPort, err)
+			}
+		}()
+	}
+
+	// If ACME is enabled and no server is running on port 80, start one.
+	// This is required for the HTTP-01 challenge.
+	if m != nil && !httpPort80Configured {
+		go func() {
+			log.Println("Starting dedicated ACME challenge server on :80")
+			// m.HTTPHandler(nil) handles challenges and redirects other HTTP -> HTTPS
+			err := http.ListenAndServe(":80", m.HTTPHandler(nil))
+			if err != nil {
+				// Don't fail fatally, but log a clear warning.
+				log.Printf("WARNING: Could not start ACME challenge server on port 80: %v. Let's Encrypt may fail.", err)
 			}
 		}()
 	}
