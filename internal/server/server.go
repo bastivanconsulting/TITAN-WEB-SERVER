@@ -230,7 +230,7 @@ func (s *Server) initHandlersLocked() error {
 
 				connFactory := gofast.SimpleConnFactory(network, address)
 				handler := gofast.NewHandler(
-					gofast.NewFileEndpoint(route.FileRoot)(gofast.BasicSession),
+					NewPHPEndpoint(route.FileRoot)(gofast.BasicSession),
 					gofast.SimpleClientFactory(connFactory),
 				)
 				s.phpHandlers[key] = handler
