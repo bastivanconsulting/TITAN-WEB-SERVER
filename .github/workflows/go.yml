@@ -57,10 +57,16 @@ jobs:
   package:
     runs-on: ubuntu-latest
     needs: build
-    # On exécute sur la branche main (plus besoin d'attendre un tag manuel)
+    # On exécute sur la branche main
     if: success() && github.ref == 'refs/heads/main'
     steps:
     - uses: actions/checkout@v4
+    
+    # Ajout de Go pour pouvoir installer nFPM
+    - name: Set up Go 1.24.3
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24.3'
     
     - name: Download Build Artifact
       uses: actions/download-artifact@v4
@@ -116,7 +122,7 @@ jobs:
 
     - name: Create nfpm configuration
       run: |
-        # On récupère la version générée automatiquement
+        # On nettoie le 'v' pour la version du paquet (Linux n'aime pas le 'v' dans la version)
         TAG_NAME=$(echo ${{ needs.build.outputs.tag_name }} | sed 's/^v//')
         
         cat <<EOF > nfpm.yaml
@@ -160,11 +166,23 @@ jobs:
           preremove: ./scripts/prerm.sh
         EOF
 
-    - name: Build Packages 📦
-      uses: goreleaser/nfpm-action@v3
-      with:
-        nfpm_file: nfpm.yaml
-        targets: "deb,rpm"
+    # CORRECTION : Installation et exécution manuelle de nFPM
+    - name: Install and Run nFPM 📦
+      run: |
+        # 1. Installer nFPM via Go
+        go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+        
+        # 2. Créer le dossier de sortie
+        mkdir -p packages
+        
+        # 3. Générer les paquets
+        echo "Building DEB..."
+        nfpm package --config nfpm.yaml --packager deb --target packages/
+        
+        echo "Building RPM..."
+        nfpm package --config nfpm.yaml --packager rpm --target packages/
+        
+        ls -l packages/
         
     - name: Upload Packages Artifact
       uses: actions/upload-artifact@v4
@@ -193,9 +211,6 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        # C'est ici que la magie opère : 
-        # On force le nom du tag avec la version générée (ex: v0.1.42).
-        # L'action va CRÉER ce tag automatiquement s'il n'existe pas.
         tag_name: ${{ needs.build.outputs.tag_name }}
         name: Release ${{ needs.build.outputs.tag_name }}
         body: "Automatic release of Titan Web Server packages (.deb, .rpm)."
