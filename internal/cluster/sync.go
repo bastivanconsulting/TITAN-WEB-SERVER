@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -92,7 +93,7 @@ func (n *Node) sendManifestToFollower(addr string, manifest []FileInfo, apiKey s
 		return
 	}
 
-	url := fmt.Sprintf("http://%s%s", addr, SyncEndpoint)
+	url := fmt.Sprintf("https://%s%s", addr, SyncEndpoint)
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
 		log.Printf("Failed to create request for %s: %v", addr, err)
@@ -101,7 +102,10 @@ func (n *Node) sendManifestToFollower(addr string, manifest []FileInfo, apiKey s
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-API-Key", apiKey)
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	client := &http.Client{Timeout: 5 * time.Second, Transport: tr}
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("Failed to send manifest to %s: %v", addr, err)
@@ -147,14 +151,17 @@ func (n *Node) HandleSyncRequest(w http.ResponseWriter, r *http.Request, leaderA
 }
 
 func (n *Node) downloadFile(leaderAddr, path, apiKey string) error {
-	url := fmt.Sprintf("http://%s%s?file=%s", leaderAddr, FileEndpoint, path)
+	url := fmt.Sprintf("https://%s%s?file=%s", leaderAddr, FileEndpoint, path)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("X-API-Key", apiKey)
 
-	client := &http.Client{Timeout: 15 * time.Second}
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	client := &http.Client{Timeout: 15 * time.Second, Transport: tr}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err

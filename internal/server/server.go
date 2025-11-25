@@ -36,6 +36,19 @@ func (s *Server) debugLog(format string, v ...interface{}) {
 	}
 }
 
+// acmeHealthCheckWrapper wraps an http.Handler to add a diagnostic endpoint
+// for the ACME challenge. This must be wrapped *before* the autocert handler.
+func acmeHealthCheckWrapper(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/acme-challenge/healthz" {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("OK"))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 //go:embed templates/error.html
 var templateFS embed.FS
 
@@ -62,6 +75,7 @@ type Server struct {
 	Cache         cache.Cache
 	Logger        *Logger
 	Debug         bool
+	autocertManager *autocert.Manager
 	ClusterNode   *cluster.Node // Optional cluster node
 	phpHandlers   map[string]http.Handler
 	proxyHandlers map[string]http.Handler
@@ -741,6 +755,7 @@ func (s *Server) Start() error {
 			HostPolicy: autocert.HostWhitelist(acmeDomains...),
 			Email:      acmeEmail,
 		}
+		s.autocertManager = m
 		s.debugLog("autocert manager configured with CacheDir: %s, HostPolicy: %v, Email: %s", certDir, acmeDomains, acmeEmail)
 		log.Printf("ACME/Let's Encrypt enabled for domains: %v (Email: %s)", acmeDomains, acmeEmail)
 	}
@@ -756,9 +771,11 @@ func (s *Server) Start() error {
 			if m != nil {
 				// If the user's server is on port 80, autocert can use it.
 				// Otherwise, autocert will need its own server (started below).
-				handler = m.HTTPHandler(s)
+				handler = m.HTTPHandler(handler)
 			}
-			if err := http.ListenAndServe(s.Config.HTTPPort, handler); err != nil {
+			// Always wrap with health check
+			finalHandler := acmeHealthCheckWrapper(handler)
+			if err := http.ListenAndServe(s.Config.HTTPPort, finalHandler); err != nil {
 				errChan <- fmt.Errorf("HTTP server on %s failed: %w", s.Config.HTTPPort, err)
 			}
 		}()
@@ -770,7 +787,9 @@ func (s *Server) Start() error {
 		go func() {
 			log.Println("Starting dedicated ACME challenge server on :80")
 			// m.HTTPHandler(nil) handles challenges and redirects other HTTP -> HTTPS
-			err := http.ListenAndServe(":80", m.HTTPHandler(nil))
+			handler := m.HTTPHandler(nil)
+			finalHandler := acmeHealthCheckWrapper(handler)
+			err := http.ListenAndServe(":80", finalHandler)
 			if err != nil {
 				// Don't fail fatally, but log a clear warning.
 				log.Printf("WARNING: Could not start ACME challenge server on port 80: %v. Let's Encrypt may fail.", err)
@@ -1024,4 +1043,31 @@ func (s *Server) handleCertSync(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (s *Server) RenewLetsEncrypt(domain string) error {
+	s.mu.RLock()
+	m := s.autocertManager
+	s.mu.RUnlock()
+
+	if m == nil {
+		return errors.New("Let's Encrypt is not enabled")
+	}
+
+	s.debugLog("Manual renewal triggered for domain: %s", domain)
+
+	// This is a bit of a hack. Autocert doesn't expose a direct "renew" method.
+	// We can force it by creating a new ClientHello and calling GetCertificate.
+	// This will trigger the renewal logic if the cert is missing or expiring.
+	go func() {
+		hello := &tls.ClientHelloInfo{ServerName: domain}
+		_, err := m.GetCertificate(hello)
+		if err != nil {
+			s.debugLog("Manual renewal for %s failed: %v", domain, err)
+		} else {
+			s.debugLog("Manual renewal for %s completed.", domain)
+		}
+	}()
+
+	return nil
 }
