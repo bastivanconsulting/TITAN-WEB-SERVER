@@ -1,119 +1,536 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="fr">
 <head>
     <meta charset="UTF-8">
-    <title>Server Admin</title>
+    <title>Titan Web Server - Administration</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        body { font-family: sans-serif; padding: 20px; background: #f4f4f4; }
-        .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
-        h1 { margin-top: 0; }
-        textarea { width: 100%; height: 300px; font-family: monospace; }
-        button { padding: 10px 20px; background: #007bff; color: white; border: none; cursor: pointer; border-radius: 4px; }
-        button:hover { background: #0056b3; }
-        .message { padding: 10px; margin-top: 10px; border-radius: 4px; display: none; }
-        .success { background: #d4edda; color: #155724; }
-        .error { background: #f8d7da; color: #721c24; }
+        body { padding-top: 20px; background-color: #f8f9fa; }
+        .card { margin-bottom: 20px; box-shadow: 0 0.125rem 0.25rem rgba(0,0,0,0.075); }
+        .nav-tabs .nav-link.active { font-weight: bold; border-top: 3px solid #0d6efd; }
+        .hidden { display: none !important; }
+        #login-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(255,255,255,0.95); z-index: 1000;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .login-box { width: 100%; max-width: 400px; padding: 2rem; background: white; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+        pre { background: #212529; color: #f8f9fa; padding: 10px; border-radius: 4px; max-height: 400px; overflow: auto; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>Server Configuration</h1>
-        <p>API Key required for changes.</p>
-        <div style="margin-bottom: 10px; display: flex; gap: 10px;">
-            <input type="password" id="apiKey" placeholder="Admin API Key" style="flex-grow: 1; padding: 8px; box-sizing: border-box;">
-            <button onclick="loadConfig()">Load Config</button>
+
+<!-- Login Overlay -->
+<div id="login-overlay">
+    <div class="login-box">
+        <h3 class="text-center mb-4">Titan Admin Login</h3>
+        <form id="loginForm">
+            <div class="mb-3">
+                <label class="form-label">Utilisateur</label>
+                <input type="text" class="form-control" id="loginUser" required>
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Mot de passe</label>
+                <input type="password" class="form-control" id="loginPass" required>
+            </div>
+            <button type="submit" class="btn btn-primary w-100">Connexion</button>
+            <div id="loginError" class="text-danger mt-2 text-center"></div>
+        </form>
+    </div>
+</div>
+
+<div class="container" id="main-interface" style="display: none;">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h1>Titan Web Server</h1>
+        <div>
+            <span id="clusterStatusBadge" class="badge bg-secondary">Cluster: Unknown</span>
+            <button class="btn btn-outline-danger btn-sm ms-2" onclick="logout()">Déconnexion</button>
         </div>
-        <textarea id="configEditor"></textarea>
-        <br><br>
-        <button onclick="saveConfig()">Save Configuration</button>
-        <div id="message" class="message"></div>
     </div>
 
-    <script>
-        const apiKeyInput = document.getElementById('apiKey');
-        const editor = document.getElementById('configEditor');
-        const msgDiv = document.getElementById('message');
+    <ul class="nav nav-tabs mb-4" id="mainTab" role="tablist">
+        <li class="nav-item">
+            <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#sites" type="button">Sites</button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#ssl" type="button">Certificats SSL</button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#cluster" type="button">Cluster</button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#config" type="button">Configuration Brute</button>
+        </li>
+    </ul>
 
-        // Initial load attempt? No, wait for key.
-        // Or try to load and if 403, tell user to enter key.
+    <div class="tab-content">
+        <!-- Sites Tab -->
+        <div class="tab-pane fade show active" id="sites">
+            <div class="row">
+                <div class="col-md-8">
+                    <div class="card">
+                        <div class="card-header">Sites Actifs</div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-hover">
+                                    <thead>
+                                        <tr>
+                                            <th>Domaine</th>
+                                            <th>Routes</th>
+                                            <th>SSL</th>
+                                            <th>Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="sitesTableBody">
+                                        <!-- Populated via JS -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card">
+                        <div class="card-header">Ajouter un Site</div>
+                        <div class="card-body">
+                            <form id="addSiteForm">
+                                <div class="mb-3">
+                                    <label class="form-label">Domaine</label>
+                                    <input type="text" class="form-control" id="newSiteDomain" placeholder="ex: example.com" required>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">Type</label>
+                                    <select class="form-select" id="newSiteType">
+                                        <option value="proxy">Proxy Reverse</option>
+                                        <option value="static">Fichiers Statiques</option>
+                                        <option value="php">PHP (FastCGI)</option>
+                                    </select>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label" id="targetLabel">Cible (URL ou Chemin)</label>
+                                    <input type="text" class="form-control" id="newSiteTarget" placeholder="ex: http://localhost:8080" required>
+                                    <div class="form-text" id="targetHelp">Adresse du backend.</div>
+                                </div>
+                                <button type="submit" class="btn btn-success w-100">Créer le site</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
 
-        function loadConfig() {
-             const apiKey = apiKeyInput.value;
-            if (!apiKey) {
-                showMsg('Please enter API Key to load config', 'error');
-                return;
-            }
+        <!-- SSL Tab -->
+        <div class="tab-pane fade" id="ssl">
+            <div class="row">
+                <div class="col-md-12">
+                    <div class="card">
+                        <div class="card-header">Gestion SSL / TLS</div>
+                        <div class="card-body">
+                            <table class="table">
+                                <thead>
+                                    <tr>
+                                        <th>Domaine</th>
+                                        <th>État</th>
+                                        <th>Fournisseur</th>
+                                        <th>Let's Encrypt</th>
+                                        <th>Import Manuel</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="sslTableBody">
+                                    <!-- Populated via JS -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
 
-            fetch('/api/config', {
-                headers: {
-                    'X-API-Key': apiKey
-                }
-            })
-            .then(async res => {
-                if (res.status === 403) {
-                    throw new Error("Invalid API Key");
-                }
-                if (!res.ok) {
-                    const text = await res.text();
-                    throw new Error(text);
-                }
+            <!-- Upload Modal -->
+            <div class="modal fade" id="uploadSSLModal" tabindex="-1">
+                <div class="modal-dialog">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">Importer Certificat</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <form id="uploadSSLForm">
+                                <input type="hidden" id="uploadDomain">
+                                <div class="mb-3">
+                                    <label class="form-label">Fichier Certificat (.crt)</label>
+                                    <input type="file" class="form-control" id="certFile" required>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">Clé Privée (.key)</label>
+                                    <input type="file" class="form-control" id="keyFile" required>
+                                </div>
+                                <button type="submit" class="btn btn-primary">Importer</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Cluster Tab -->
+        <div class="tab-pane fade" id="cluster">
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-header">État du Cluster (Raft)</div>
+                        <div class="card-body" id="clusterStatusBody">
+                            Chargement...
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-header">Rejoindre un Cluster</div>
+                        <div class="card-body">
+                            <form id="joinClusterForm">
+                                <div class="mb-3">
+                                    <label class="form-label">ID du Noeud (Mon ID)</label>
+                                    <input type="text" class="form-control" id="joinNodeID" required>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">Adresse du Leader (IP:Port)</label>
+                                    <input type="text" class="form-control" id="joinAddr" required>
+                                </div>
+                                <button type="submit" class="btn btn-warning">Rejoindre</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Config Tab -->
+        <div class="tab-pane fade" id="config">
+             <div class="card">
+                <div class="card-body">
+                    <div class="mb-3">
+                        <textarea id="configEditor" class="form-control" rows="20" style="font-family: monospace;"></textarea>
+                    </div>
+                    <button onclick="saveConfig()" class="btn btn-primary">Sauvegarder la configuration</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+    let apiKey = localStorage.getItem('titan_api_key');
+    let configData = {};
+
+    // Check Auth
+    if (apiKey) {
+        verifyAuth();
+    } else {
+        document.getElementById('login-overlay').style.display = 'flex';
+    }
+
+    function verifyAuth() {
+        fetch('/api/config', { headers: { 'X-API-Key': apiKey } })
+            .then(res => {
+                if (res.status === 403) throw new Error("Forbidden");
                 return res.json();
             })
             .then(data => {
-                editor.value = JSON.stringify(data, null, 4);
-                showMsg('Configuration loaded', 'success');
+                configData = data;
+                initApp();
             })
-            .catch(err => {
-                showMsg('Failed to load: ' + err.message, 'error');
+            .catch(() => {
+                localStorage.removeItem('titan_api_key');
+                document.getElementById('login-overlay').style.display = 'flex';
+                document.getElementById('main-interface').style.display = 'none';
             });
-        }
+    }
 
-        // Auto-load if key is saved in localStorage (optional enhancement)
-        const savedKey = localStorage.getItem('admin_api_key');
-        if (savedKey) {
-            apiKeyInput.value = savedKey;
-            loadConfig();
-        }
+    // Login Handler
+    document.getElementById('loginForm').onsubmit = async (e) => {
+        e.preventDefault();
+        const user = document.getElementById('loginUser').value;
+        const pass = document.getElementById('loginPass').value;
 
-        function saveConfig() {
-            const apiKey = apiKeyInput.value;
-            localStorage.setItem('admin_api_key', apiKey); // Save for convenience
-            if (!apiKey) {
-                showMsg('Please enter API Key', 'error');
+        try {
+            const formData = new FormData();
+            formData.append('username', user);
+            formData.append('password', pass);
+
+            const res = await fetch('/login', { method: 'POST', body: formData });
+            if (!res.ok) throw new Error("Identifiants incorrects");
+
+            const data = await res.json();
+            apiKey = data.api_key;
+            localStorage.setItem('titan_api_key', apiKey);
+
+            document.getElementById('login-overlay').style.display = 'none';
+            verifyAuth();
+        } catch (err) {
+            document.getElementById('loginError').textContent = err.message;
+        }
+    };
+
+    function logout() {
+        localStorage.removeItem('titan_api_key');
+        location.reload();
+    }
+
+    // Init App
+    function initApp() {
+        document.getElementById('main-interface').style.display = 'block';
+        renderSites();
+        renderConfig();
+        loadClusterStatus();
+        renderSSL();
+    }
+
+    // --- Sites Management ---
+    function renderSites() {
+        const tbody = document.getElementById('sitesTableBody');
+        tbody.innerHTML = '';
+
+        if (!configData.sites) return;
+
+        configData.sites.forEach(site => {
+            const tr = document.createElement('tr');
+
+            // Routes Summary
+            let routesDesc = site.routes.map(r =>
+                `<span class="badge bg-info text-dark">${r.path} -> ${r.type}</span>`
+            ).join(' ');
+
+            // SSL Badge
+            let sslBadge = '<span class="badge bg-secondary">Off</span>';
+            if (site.ssl && site.ssl.enabled) {
+                sslBadge = `<span class="badge bg-success">${site.ssl.provider}</span>`;
+            }
+
+            tr.innerHTML = `
+                <td><strong>${site.domain}</strong></td>
+                <td>${routesDesc}</td>
+                <td>${sslBadge}</td>
+                <td>
+                    <button class="btn btn-danger btn-sm" onclick="deleteSite('${site.domain}')">Supprimer</button>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+    }
+
+    document.getElementById('newSiteType').onchange = (e) => {
+        const val = e.target.value;
+        const help = document.getElementById('targetHelp');
+        const input = document.getElementById('newSiteTarget');
+        if (val === 'proxy') {
+            input.placeholder = "http://localhost:8080";
+            help.textContent = "URL du serveur backend.";
+        } else if (val === 'php') {
+             input.placeholder = "/var/www/html";
+             help.textContent = "Dossier racine contenant les fichiers PHP.";
+        } else {
+            input.placeholder = "/var/www/html";
+            help.textContent = "Dossier racine des fichiers statiques.";
+        }
+    };
+
+    document.getElementById('addSiteForm').onsubmit = async (e) => {
+        e.preventDefault();
+        const domain = document.getElementById('newSiteDomain').value;
+        const type = document.getElementById('newSiteType').value;
+        const target = document.getElementById('newSiteTarget').value;
+
+        try {
+            const res = await fetch('/api/sites', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+                body: JSON.stringify({ domain, type, target })
+            });
+            if (!res.ok) throw new Error(await res.text());
+
+            alert('Site créé avec succès');
+            verifyAuth(); // Reload config
+            e.target.reset();
+        } catch (err) {
+            alert('Erreur: ' + err.message);
+        }
+    };
+
+    async function deleteSite(domain) {
+        if (!confirm(`Supprimer le site ${domain} ?`)) return;
+        try {
+            const res = await fetch(`/api/sites/${domain}`, {
+                method: 'DELETE',
+                headers: { 'X-API-Key': apiKey }
+            });
+            if (!res.ok) throw new Error(await res.text());
+            verifyAuth();
+        } catch (err) {
+            alert('Erreur: ' + err.message);
+        }
+    }
+
+    // --- SSL Management ---
+    function renderSSL() {
+        const tbody = document.getElementById('sslTableBody');
+        tbody.innerHTML = '';
+
+        if (!configData.sites) return;
+
+        configData.sites.forEach(site => {
+            const tr = document.createElement('tr');
+            const isEnabled = site.ssl && site.ssl.enabled;
+            const provider = isEnabled ? site.ssl.provider : '-';
+            const isLE = provider === 'letsencrypt';
+
+            tr.innerHTML = `
+                <td>${site.domain}</td>
+                <td>${isEnabled ? '<span class="text-success">Actif</span>' : '<span class="text-muted">Inactif</span>'}</td>
+                <td>${provider}</td>
+                <td>
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox"
+                            ${isLE ? 'checked' : ''}
+                            onchange="toggleLE('${site.domain}', this.checked)">
+                    </div>
+                </td>
+                <td>
+                    <button class="btn btn-sm btn-outline-primary" onclick="openUploadModal('${site.domain}')">Importer</button>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+    }
+
+    async function toggleLE(domain, checked) {
+        const email = checked ? prompt("Email pour Let's Encrypt (optionnel):") : "";
+        const provider = checked ? "letsencrypt" : "off";
+
+        try {
+             const res = await fetch('/api/ssl/toggle', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+                body: JSON.stringify({ domain, provider, email })
+            });
+            if (!res.ok) throw new Error(await res.text());
+            verifyAuth();
+        } catch (err) {
+            alert('Erreur: ' + err.message);
+            verifyAuth(); // Revert UI
+        }
+    }
+
+    function openUploadModal(domain) {
+        document.getElementById('uploadDomain').value = domain;
+        new bootstrap.Modal(document.getElementById('uploadSSLModal')).show();
+    }
+
+    document.getElementById('uploadSSLForm').onsubmit = async (e) => {
+        e.preventDefault();
+        const domain = document.getElementById('uploadDomain').value;
+        const cert = document.getElementById('certFile').files[0];
+        const key = document.getElementById('keyFile').files[0];
+
+        const formData = new FormData();
+        formData.append('domain', domain);
+        formData.append('cert_file', cert);
+        formData.append('key_file', key);
+
+        try {
+            const res = await fetch('/api/ssl/upload', {
+                method: 'POST',
+                headers: { 'X-API-Key': apiKey },
+                body: formData
+            });
+            if (!res.ok) throw new Error(await res.text());
+
+            alert('Certificat importé !');
+            bootstrap.Modal.getInstance(document.getElementById('uploadSSLModal')).hide();
+            verifyAuth();
+        } catch (err) {
+            alert('Erreur: ' + err.message);
+        }
+    };
+
+    // --- Cluster ---
+    async function loadClusterStatus() {
+        try {
+            const res = await fetch('/api/cluster/status', { headers: { 'X-API-Key': apiKey } });
+            const data = await res.json();
+
+            const div = document.getElementById('clusterStatusBody');
+            const badge = document.getElementById('clusterStatusBadge');
+
+            if (!data.enabled) {
+                div.innerHTML = "<p>Le clustering n'est pas activé sur ce nœud.</p>";
+                badge.className = "badge bg-secondary";
+                badge.textContent = "Cluster: Off";
                 return;
             }
 
-            try {
-                const config = JSON.parse(editor.value);
-                fetch('/api/config', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'X-API-Key': apiKey
-                    },
-                    body: JSON.stringify(config)
-                })
-                .then(async res => {
-                    const text = await res.text();
-                    if (res.ok) {
-                        showMsg('Saved successfully!', 'success');
-                    } else {
-                        showMsg('Error: ' + text, 'error');
-                    }
-                })
-                .catch(err => {
-                    showMsg('Network error: ' + err, 'error');
-                });
-            } catch (e) {
-                showMsg('Invalid JSON: ' + e, 'error');
-            }
-        }
+            badge.className = "badge bg-primary";
+            badge.textContent = `Cluster: ${data.state}`;
 
-        function showMsg(text, type) {
-            msgDiv.textContent = text;
-            msgDiv.className = 'message ' + type;
-            msgDiv.style.display = 'block';
+            let html = `
+                <p><strong>État:</strong> ${data.state}</p>
+                <p><strong>Leader:</strong> ${data.leader}</p>
+                <h5>Membres:</h5>
+                <ul>
+            `;
+            if (data.servers) {
+                data.servers.forEach(s => {
+                    html += `<li>${s.id} (${s.address}) - ${s.suffrage}</li>`;
+                });
+            }
+            html += "</ul>";
+            div.innerHTML = html;
+
+        } catch (e) {
+            console.error(e);
         }
-    </script>
+    }
+
+    document.getElementById('joinClusterForm').onsubmit = async (e) => {
+        e.preventDefault();
+        const id = document.getElementById('joinNodeID').value;
+        const addr = document.getElementById('joinAddr').value;
+
+         try {
+            const res = await fetch('/api/cluster/join', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+                body: JSON.stringify({ id, addr })
+            });
+            if (!res.ok) throw new Error(await res.text());
+            alert('Demande envoyée !');
+            loadClusterStatus();
+        } catch (err) {
+            alert('Erreur: ' + err.message);
+        }
+    }
+
+    // --- Config Editor ---
+    function renderConfig() {
+        document.getElementById('configEditor').value = JSON.stringify(configData, null, 4);
+    }
+
+    async function saveConfig() {
+        try {
+            const newCfg = JSON.parse(document.getElementById('configEditor').value);
+             const res = await fetch('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+                body: JSON.stringify(newCfg)
+            });
+            if (!res.ok) throw new Error(await res.text());
+            alert('Configuration sauvegardée !');
+            verifyAuth();
+        } catch (err) {
+            alert('Erreur: ' + err.message);
+        }
+    }
+</script>
 </body>
 </html>

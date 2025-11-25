@@ -8,7 +8,7 @@
 
 ## 📋 Prérequis
 
-*   **Système d'exploitation** : Linux, macOS, ou Windows.
+*   **Système d'exploitation** : Linux (recommandé pour PAM/Production), macOS, ou Windows.
 *   **Langage** : Go **1.24** ou supérieur.
     *   [Télécharger Go](https://go.dev/dl/)
 
@@ -31,12 +31,13 @@ Titan Server est distribué sous forme de code source. Vous devez le compiler po
     ```
 
     Cela générera un exécutable `titan-web-server` à la racine.
+    *(Note : Pour activer le support PAM sur Linux, assurez-vous d'avoir `libpam0g-dev` installé et CGO activé.)*
 
 ---
 
-## ⚙️ Configuration (Migration .conf)
+## ⚙️ Configuration (Format .conf)
 
-Titan Server utilise désormais un format de configuration standardisé **.conf** (syntaxe compatible NGINX). Le format JSON n'est plus supporté.
+Titan Server utilise un format de configuration standardisé **.conf** (syntaxe compatible NGINX).
 
 ### Structure des Fichiers
 *   **Fichier Principal** : `titan-server.conf` (Doit être passé en argument au démarrage).
@@ -47,16 +48,14 @@ Titan Server utilise désormais un format de configuration standardisé **.conf*
 Créez un fichier `titan-server.conf` avec le contenu suivant :
 
 ```nginx
-# Utilisateur et Processus (Non utilisé pour le moment, réservé pour le futur)
-user titan;
-worker_processes auto;
-
 # Ports d'écoute
 http_port :8080;
 https_port :8443;
 
 # Sécurité et Administration
 admin_api_key "votre-clé-secrète";
+
+# Authentification Admin : "admin" (simple) ou "pam" (système)
 admin_user "admin";
 admin_pass "admin123";
 admin_allowlist 127.0.0.1 ::1;
@@ -72,52 +71,48 @@ security {
 
 # Définition des Services HTTP
 http {
-    # Site Statique
     server {
         server_name www.example.com;
-
         ssl {
             enabled on;
             provider letsencrypt;
             email "admin@example.com";
-            ocsp_stapling on;
         }
-
         location / {
             root /var/www/html;
-        }
-    }
-
-    # Reverse Proxy
-    server {
-        server_name api.local;
-
-        location / {
-            proxy_pass http://127.0.0.1:3000;
-        }
-    }
-
-    # PHP (FastCGI)
-    server {
-        server_name app.php;
-
-        location / {
-            root /var/www/phpapp;
-            fastcgi_pass 127.0.0.1:9000;
         }
     }
 }
 ```
 
-### Directives Principales
-*   **http_port / https_port** : Ports d'écoute.
-*   **admin_api_key** : Clé pour l'API REST d'administration.
-*   **security { fips_compliant on; }** : Active le mode conformité FIPS (TLS 1.2+, Ciphers restreints).
-*   **server { ... }** : Définit un site (Virtual Host).
-*   **location / { ... }** : Définit une route.
-    *   `root` : Racine pour fichiers statiques.
-    *   `proxy_pass` : Cible pour Reverse Proxy.
-    *   `fastcgi_pass` : Cible pour PHP-FPM.
+---
+
+## 🖥️ Interface d'Administration
+
+Titan Web Server intègre une **interface web complète** pour gérer votre instance et votre cluster.
+
+### Accès
+*   **URL** : `http://votre-serveur:8080/admin`
+*   **Restriction IP** : L'accès est limité par la directive `admin_allowlist`.
+
+### Fonctionnalités
+1.  **Tableau de Bord** : Vue d'ensemble des sites et du statut.
+2.  **Gestion des Sites** :
+    *   Création assistée de sites (Proxy, Statique, PHP).
+    *   Suppression de sites à chaud.
+3.  **Gestion SSL/TLS** :
+    *   Activation/Désactivation de SSL par site.
+    *   **Upload** de certificats manuels (.crt/.key) directement depuis le navigateur.
+    *   Activation de **Let's Encrypt** en un clic.
+4.  **Cluster** :
+    *   Visualisation de l'état Raft (Leader/Follower).
+    *   Formulaire pour rejoindre un cluster existant.
+5.  **Éditeur Brut** : Modification directe du fichier de configuration pour les utilisateurs avancés.
+
+### Authentification
+L'interface supporte deux modes d'authentification (configurés via `admin_user`) :
+*   **Simple** : Utilise `admin_user` et `admin_pass` définis dans le fichier de config.
+*   **PAM (Linux)** : Si `admin_user "pam";` est défini, l'authentification se fait via les comptes utilisateurs du système (service PAM `login`).
 
 ---
 
@@ -126,8 +121,6 @@ http {
 Titan Server intègre un moteur de consensus **Raft** pour la synchronisation automatique des configurations entre plusieurs nœuds.
 
 ### Démarrer le Premier Nœud (Leader/Bootstrap)
-Pour initialiser un nouveau cluster :
-
 ```bash
 ./titan-web-server \
   -config titan-server.conf \
@@ -137,40 +130,18 @@ Pour initialiser un nouveau cluster :
   -bootstrap
 ```
 
-*   `-bootstrap` : Indique que ce nœud doit initialiser le cluster (à utiliser uniquement pour le premier nœud).
-
 ### Ajouter des Nœuds (Workers)
-Pour ajouter d'autres nœuds au cluster :
-
-1.  Démarrer le second nœud (sans bootstrap) :
-    ```bash
-    ./titan-web-server \
-      -config titan-server.conf \
-      -node-id node2 \
-      -raft-addr 127.0.0.1:9001 \
-      -raft-dir ./data/node2 \
-      -join 127.0.0.1:9000
-    ```
-    *   `-join` : Adresse HTTP d'administration du leader (Non, l'implémentation actuelle demande une action manuelle ou via API, la commande ci-dessus est une simplification pour l'exemple, référez-vous à l'API).
-
-    *Correction : L'option `-join` tente de rejoindre via le protocole Raft ou API selon l'implémentation. Dans la version actuelle, utilisez l'API pour joindre.*
-
-**Méthode Recommandée pour Joindre :**
-
-1.  Démarrer le nœud 2 :
+1.  Démarrer le nœud (sans bootstrap) :
     ```bash
     ./titan-web-server -config titan-server.conf -node-id node2 -raft-addr 127.0.0.1:9001 -raft-dir ./data/node2
     ```
-
-2.  Demander au Leader (Node 1) d'ajouter Node 2 via l'API :
+2.  **Via l'Interface Admin** : Allez dans l'onglet "Cluster" et entrez l'ID et l'adresse du nouveau nœud.
+3.  **Ou via API** :
     ```bash
     curl -X POST http://127.0.0.1:8080/api/cluster/join \
          -H "X-API-Key: votre-clé-secrète" \
          -d '{"id": "node2", "addr": "127.0.0.1:9001"}'
     ```
-
-### Synchronisation
-Une fois le cluster formé, toute modification de configuration envoyée au Leader (via API ou fichier) est automatiquement répliquée sur tous les nœuds. Le fichier `titan-server.conf` est mis à jour localement sur chaque nœud.
 
 ---
 
@@ -178,13 +149,13 @@ Une fois le cluster formé, toute modification de configuration envoyée au Lead
 
 *   **SSL Automatique** : Intégration Let's Encrypt native (`provider letsencrypt`).
 *   **HSTS** : Strict Transport Security configurable par site.
-*   **OCSP Stapling** : Activé par défaut pour les performances et la confidentialité.
-*   **Audit Logs** : Logs d'accès et d'erreurs au format compatible ISO 27001 dans `log_dir`.
+*   **OCSP Stapling** : Activé par défaut.
+*   **Audit Logs** : Logs d'accès et d'erreurs compatibles ISO 27001.
 
 ---
 
 ## 🔍 Dépannage
 
-*   **Erreur de Parsing** : Vérifiez que vos directives se terminent par un point-virgule `;` et que les blocs sont bien fermés par `}`.
+*   **Erreur de Parsing** : Vérifiez que vos directives se terminent par un point-virgule `;`.
 *   **Cluster** : Assurez-vous que les ports Raft (TCP) sont ouverts entre les nœuds.
-*   **Droits** : Le processus doit avoir les droits d'écriture dans `log_dir`, `raft-dir` et sur le fichier `titan-server.conf`.
+*   **Droits** : Le processus doit avoir les droits d'écriture dans `log_dir`, `raft-dir` et sur `titan-server.conf`.

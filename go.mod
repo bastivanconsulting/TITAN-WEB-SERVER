@@ -7,6 +7,7 @@ toolchain go1.24.3
 require (
 	github.com/hashicorp/raft v1.7.3
 	github.com/hashicorp/raft-boltdb v0.0.0-20251103221153-05f9dd7a5148
+	github.com/msteinert/pam v1.2.0
 	github.com/quic-go/quic-go v0.57.0
 	github.com/yookoala/gofast v0.8.0
 	golang.org/x/crypto v0.45.0

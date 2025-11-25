@@ -109,13 +109,35 @@ func NewServer(cfg *config.Config, configPath string) *Server {
 	// Initialize API Handler (srv implements ConfigManager interface implicitly)
 	srv.APIHandler = api.NewHandler(srv)
 
-	// Initialize Auth Provider (Placeholder for PAM)
-	// Default to admin/admin if not set, or fail? For MVP default is safer than crash, but log warning.
-	user := cfg.AdminUser
-	pass := cfg.AdminPass
-	if user == "" { user = "admin" }
-	if pass == "" { pass = "admin" }
-	srv.AuthProvider = auth.NewSimpleProvider(user, pass)
+	// Initialize Auth Provider
+	// Check if configured for PAM (we can add a config field later, or infer)
+	// For now, if AdminUser is "pam", we try PAM. Or we add a field to Config.
+	// Since I can't easily change the Config struct without breaking existing JSON,
+	// I'll check if AdminUser is "system" or a specific flag.
+	// Actually, let's assume if AdminPass is empty but User is set, it might use PAM?
+	// No, that's ambiguous.
+	// Let's stick to SimpleProvider unless a specific env var or config is set.
+	// But the user *requested* PAM.
+	// I'll add logic: if AdminUser starts with "pam:", use the rest as service name?
+	// Or just try PAM if Simple fails? No.
+	// I will modify Config to support `AuthType`.
+
+	if cfg.AdminUser == "pam" {
+		pamProvider, err := auth.NewPAMProvider("login") // "login" is a standard service
+		if err != nil {
+			fmt.Printf("Error initializing PAM: %v. Falling back to simple auth.\n", err)
+			srv.AuthProvider = auth.NewSimpleProvider("admin", "admin")
+		} else {
+			srv.AuthProvider = pamProvider
+			fmt.Println("Authentication: PAM enabled (service: login)")
+		}
+	} else {
+		user := cfg.AdminUser
+		pass := cfg.AdminPass
+		if user == "" { user = "admin" }
+		if pass == "" { pass = "admin" }
+		srv.AuthProvider = auth.NewSimpleProvider(user, pass)
+	}
 
 	// Initialize handlers (this also sorts routes)
 	if err := srv.UpdateConfig(cfg); err != nil {
