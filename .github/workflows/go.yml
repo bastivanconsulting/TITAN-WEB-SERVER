@@ -16,7 +16,6 @@ on:
         required: true
         default: 'v0.1.0'
 
-# Permet au workflow de créer des Releases et des Tags
 permissions:
   contents: write
 
@@ -78,6 +77,11 @@ jobs:
         with:
           name: titan-web-server-linux-amd64
           path: .
+
+      - name: Install nFPM via Go and add to PATH
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          echo "$HOME/go/bin" >> $GITHUB_PATH
 
       - name: Create packaging scripts
         run: |
@@ -169,9 +173,8 @@ jobs:
             preremove: ./scripts/prerm.sh
           EOF
 
-      - name: Install and Run nFPM 📦
+      - name: Build DEB & RPM packages
         run: |
-          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
           mkdir -p packages
           nfpm package --config nfpm.yaml --packager deb --target packages/
           nfpm package --config nfpm.yaml --packager rpm --target packages/
@@ -206,10 +209,10 @@ jobs:
           name: Release ${{ needs.build.outputs.tag_name }}
           body: |
             🚀 Release of Titan Web Server.
-            
+
             **Version**: ${{ needs.build.outputs.tag_name }}
             **Commit**: ${{ github.sha }}
-            
+
             📦 **Artifacts included:**
             - .deb (Debian/Ubuntu)
             - .rpm (RHEL/CentOS)
