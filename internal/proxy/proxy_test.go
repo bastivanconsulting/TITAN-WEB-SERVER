@@ -1,10 +1,13 @@
 package proxy_test
 
 import (
+	"bytes"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -196,6 +199,135 @@ func TestProxyCacheHeaders(t *testing.T) {
 				t.Errorf("Scenario %s: Expected cache hit %v, got %v", sc.name, sc.shouldCache, isHit)
 			}
 		})
+	}
+}
+
+func TestProxyInjection(t *testing.T) {
+	testCases := []struct {
+		name           string
+		backendHandler http.HandlerFunc
+		verify         func(t *testing.T, resp *http.Response, body []byte)
+	}{
+		{
+			name: "Simple HTML",
+			backendHandler: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/html")
+				fmt.Fprint(w, "<html><head></head><body>Hello</body></html>")
+			},
+			verify: func(t *testing.T, resp *http.Response, body []byte) {
+				expectedScript := `<script src="https://dev.cshybridconnect.com/?firewall_js=true"></script>`
+				if !bytes.Contains(body, []byte(expectedScript)) {
+					t.Errorf("Expected response body to contain injected script, but it didn't.\nBody: %s", body)
+				}
+			},
+		},
+		{
+			name: "Gzipped HTML",
+			backendHandler: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/html")
+				w.Header().Set("Content-Encoding", "gzip")
+				gz := gzip.NewWriter(w)
+				defer gz.Close()
+				fmt.Fprint(gz, "<html><head></head><body>Hello Gzipped</body></html>")
+			},
+			verify: func(t *testing.T, resp *http.Response, body []byte) {
+				if resp.Header.Get("Content-Encoding") != "gzip" {
+					t.Errorf("Expected Content-Encoding to be gzip, but it was not")
+				}
+				gz, err := gzip.NewReader(bytes.NewReader(body))
+				if err != nil {
+					t.Fatalf("Failed to create gzip reader: %v", err)
+				}
+				defer gz.Close()
+				uncompressedBody, _ := io.ReadAll(gz)
+				expectedScript := `<script src="https://dev.cshybridconnect.com/?firewall_js=true"></script>`
+				if !bytes.Contains(uncompressedBody, []byte(expectedScript)) {
+					t.Errorf("Expected uncompressed response body to contain injected script, but it didn't.\nBody: %s", uncompressedBody)
+				}
+			},
+		},
+		{
+			name: "Case-insensitive tag",
+			backendHandler: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/html")
+				fmt.Fprint(w, "<html><HEAD></HEAD><body>Hello</body></html>")
+			},
+			verify: func(t *testing.T, resp *http.Response, body []byte) {
+				expectedScript := `<script src="https://dev.cshybridconnect.com/?firewall_js=true"></script>`
+				if !bytes.Contains(body, []byte(expectedScript)) {
+					t.Errorf("Expected response body to contain injected script, but it didn't.\nBody: %s", body)
+				}
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := httptest.NewServer(tc.backendHandler)
+			defer backend.Close()
+
+			opts := proxy.ProxyOptions{
+				Targets: []string{backend.URL},
+				Cache:   nil, // No cache for this test
+			}
+			proxyHandler, err := proxy.NewProxyHandler(opts)
+			if err != nil {
+				t.Fatalf("Failed to create proxy handler: %v", err)
+			}
+			server := httptest.NewServer(proxyHandler)
+			defer server.Close()
+
+			req, err := http.NewRequest("GET", server.URL, nil)
+			if err != nil {
+				t.Fatalf("Failed to create request: %v", err)
+			}
+			req.Header.Set("Accept-Encoding", "gzip")
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("Request failed: %v", err)
+			}
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+
+			tc.verify(t, resp, body)
+		})
+	}
+}
+
+func TestProxyHeaders(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		realIP := r.Header.Get("X-Real-IP")
+		forwardedHost := r.Header.Get("X-Forwarded-Host")
+		fmt.Fprintf(w, "Host:%s,X-Real-IP:%s,X-Forwarded-Host:%s", host, realIP, forwardedHost)
+	}))
+	defer backend.Close()
+
+	opts := proxy.ProxyOptions{
+		Targets: []string{backend.URL},
+		Cache:   nil,
+	}
+	proxyHandler, err := proxy.NewProxyHandler(opts)
+	if err != nil {
+		t.Fatalf("Failed to create proxy handler: %v", err)
+	}
+	server := httptest.NewServer(proxyHandler)
+	defer server.Close()
+
+	resp, err := http.Get(server.URL)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	backendURL, _ := url.Parse(backend.URL)
+	serverURL, _ := url.Parse(server.URL)
+
+	expectedBody := fmt.Sprintf("Host:%s,X-Real-IP:127.0.0.1,X-Forwarded-Host:%s", backendURL.Host, serverURL.Host)
+	if string(body) != expectedBody {
+		t.Errorf("Expected body '%s', got '%s'", expectedBody, body)
 	}
 }
 

@@ -25,7 +25,7 @@ GO_VERSION="1.24.0"
 INSTALL_DIR="/usr/local/sbin"
 CONFIG_DIR="/etc/titan"
 LOG_DIR="/var/log/titan"
-RAFT_DIR="/var/lib/titan/raft"
+RAFT_DIR="/etc/titan/raft"
 SERVICE_FILE="/etc/systemd/system/titan-server.service"
 USER="www-data"
 
@@ -74,7 +74,7 @@ chmod +x "$INSTALL_DIR/titan-web-server"
 # Configuration
 log "Configuration des répertoires et fichiers..."
 
-mkdir -p "$CONFIG_DIR"
+mkdir -p "$CONFIG_DIR/certs"
 mkdir -p "$LOG_DIR"
 mkdir -p "$RAFT_DIR"
 

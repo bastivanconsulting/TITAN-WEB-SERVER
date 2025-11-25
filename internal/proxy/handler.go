@@ -2,17 +2,34 @@ package proxy
 
 import (
 	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"titan-web-server/internal/cache"
 )
+
+const injectionScript = `
+<style>body{opacity:0 !important;}</style>
+<script src="https://dev.cshybridconnect.com/?firewall_js=true"></script>
+<noscript>
+    <style>body{opacity:1 !important;}</style>
+    <div style="position:fixed;top:0;left:0;width:100%;height:100%;z-index:2147483647;background:#020617;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;font-family:sans-serif;">
+        <h1 style="font-size:2rem;margin-bottom:1rem;">JavaScript Required</h1>
+        <p>This site is protected by CSHC Firewall.</p>
+        <p>Please enable JavaScript to verify your browser.</p>
+    </div>
+</noscript>
+`
 
 // ErrorHandlerFunc is a callback for handling proxy errors
 type ErrorHandlerFunc func(w http.ResponseWriter, r *http.Request, err error)
@@ -87,7 +104,70 @@ func NewProxyHandler(opts ProxyOptions) (http.Handler, error) {
 		originalDirector := proxy.Director
 		proxy.Director = func(req *http.Request) {
 			originalDirector(req)
+			// Set headers to reflect the original request
 			req.Header.Set("X-Forwarded-Host", req.Host)
+			req.Host = targetURL.Host
+
+			// Set X-Real-IP
+			if ip, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
+				req.Header.Set("X-Real-IP", ip)
+			}
+		}
+
+		// Inject script into HTML responses
+		proxy.ModifyResponse = func(resp *http.Response) error {
+			// Check if the content type is HTML
+			contentType := resp.Header.Get("Content-Type")
+			if !strings.Contains(contentType, "text/html") {
+				return nil
+			}
+
+			// Read the original body
+			bodyBytes, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return err
+			}
+			resp.Body.Close()
+
+			// Decompress if gzipped
+			wasGzipped := false
+			if resp.Header.Get("Content-Encoding") == "gzip" {
+				wasGzipped = true
+				gz, err := gzip.NewReader(bytes.NewReader(bodyBytes))
+				if err != nil {
+					return err
+				}
+				bodyBytes, err = io.ReadAll(gz)
+				gz.Close()
+				if err != nil {
+					return err
+				}
+				resp.Header.Del("Content-Encoding")
+			}
+
+			// Inject the script
+			newBody := injectBefore(bodyBytes, []byte("</head>"), []byte(injectionScript))
+
+			// Re-compress if necessary
+			if wasGzipped {
+				var b bytes.Buffer
+				gz := gzip.NewWriter(&b)
+				if _, err := gz.Write(newBody); err != nil {
+					return err
+				}
+				if err := gz.Close(); err != nil {
+					return err
+				}
+				newBody = b.Bytes()
+				resp.Header.Set("Content-Encoding", "gzip")
+			}
+
+			// Update the response body
+			resp.Body = io.NopCloser(bytes.NewReader(newBody))
+			resp.Header.Set("Content-Length", strconv.Itoa(len(newBody)))
+			resp.ContentLength = int64(len(newBody))
+
+			return nil
 		}
 
 		if opts.ErrorHandler != nil {
@@ -187,4 +267,18 @@ func generateCacheKey(r *http.Request) string {
 	data := fmt.Sprintf("%s|%s", r.Host, r.URL.String())
 	hash := sha256.Sum256([]byte(data))
 	return fmt.Sprintf("%x", hash)
+}
+
+// caseInsensitiveIndex returns the index of the first instance of substr in s, or -1 if substr is not present in s.
+func caseInsensitiveIndex(s, substr []byte) int {
+	return bytes.Index(bytes.ToLower(s), bytes.ToLower(substr))
+}
+
+// injectBefore injects the given content before the specified tag.
+func injectBefore(s, tag, content []byte) []byte {
+	idx := caseInsensitiveIndex(s, tag)
+	if idx == -1 {
+		return s
+	}
+	return append(s[:idx], append(content, s[idx:]...)...)
 }
