@@ -178,6 +178,13 @@ func TestHybridHandlerReal(t *testing.T) {
 			expectPHP: true,
 			expectedStatus: 200,
 		},
+		{
+			name:           "Missing PHP file (should 404)",
+			path:           "/missing.php",
+			expectPHP:      false,
+			expectContent:  "404 page not found\n",
+			expectedStatus: 404,
+		},
 	}
 
 	for _, tt := range tests {
@@ -196,7 +203,7 @@ func TestHybridHandlerReal(t *testing.T) {
 				if mockPHP.Called {
 					t.Errorf("Expected request to be handled by Static handler, but PHP handler was called")
 				}
-				if w.Body.String() != tt.expectContent {
+				if tt.expectContent != "" && w.Body.String() != tt.expectContent {
 					t.Errorf("Expected content %q, got %q", tt.expectContent, w.Body.String())
 				}
 			}
