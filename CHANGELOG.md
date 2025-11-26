@@ -1,19 +1,19 @@
 # Changelog
 
-Toutes les modifications notables de ce projet seront documentées dans ce fichier.
+## v1.25.1 (2024-07-16)
 
-Le format est basé sur [Keep a Changelog](https://keepachangelog.com/fr/1.0.0/),
-et ce projet adhère à la [Gestion Sémantique de Version](https://semver.org/lang/fr/).
+### NOUVEAUTÉS
 
-## [1.25.0] - 2025-11-26
+*   **Prise en charge des modules JavaScript externes** : Il est désormais possible d'étendre les fonctionnalités du serveur avec des modules JavaScript.
+*   **Structure de configuration de type Nginx** : La configuration est maintenant plus familière pour les utilisateurs de Nginx, avec les répertoires `sites-enabled` et `conf.d`.
 
-### ✨ Nouveautés
+### CHANGEMENTS
 
-- **Configuration du WAF par `location`** : Il est maintenant possible de définir des règles de pare-feu applicatif web (WAF) spécifiques à une `location`. Cela permet un contrôle de sécurité beaucoup plus granulaire. Par exemple, vous pouvez appliquer des limites de taux plus strictes sur une page de connexion (`/login`) tout en désactivant le WAF pour les ressources statiques (`/static`). Les règles définies dans une `location` surchargent celles du `server`.
+*   **Abandon de l'interface web** : L'interface d'administration web a été complètement supprimée.
+*   **Abandon du format JSON** : Le format de configuration JSON a été complètement abandonné au profit d'un format de type Nginx.
+*   **Abandon du rechargement à chaud** : Le rechargement à chaud de la configuration a été supprimé. Le serveur doit être redémarré pour que les modifications de la configuration prennent effet.
+*   **Abandon du clustering** : La fonctionnalité de clustering a été supprimée.
 
-- **Challenge JavaScript** : Une nouvelle protection contre les bots a été ajoutée. En activant le `js_challenge` dans un bloc `waf`, le serveur présentera aux visiteurs une page de vérification qui s'assure qu'ils utilisent un navigateur capable d'exécuter du JavaScript. C'est une méthode efficace pour filtrer les bots simples et réduire le trafic automatisé.
+### CORRECTIONS
 
-### 📚 Documentation
-
-- Le `README.md` a été mis à jour pour inclure des explications et des exemples pour les nouvelles fonctionnalités du WAF.
-- Le fichier d'exemple `titan-server.conf` a été enrichi pour montrer comment utiliser le WAF par `location` et le challenge JavaScript.
+*   Aucune correction de bogue dans cette version.

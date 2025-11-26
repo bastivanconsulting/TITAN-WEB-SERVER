@@ -16,28 +16,9 @@ func EncodeToConf(c *Config) string {
 		sb.WriteString(fmt.Sprintf("https_port %s;\n", c.HTTPSPort))
 	}
 
-	if c.AdminAPIKey != "" {
-		sb.WriteString(fmt.Sprintf("admin_api_key \"%s\";\n", c.AdminAPIKey))
-	}
-	if c.AdminUser != "" {
-		sb.WriteString(fmt.Sprintf("admin_user \"%s\";\n", c.AdminUser))
-	}
-	if c.AdminPass != "" {
-		sb.WriteString(fmt.Sprintf("admin_pass \"%s\";\n", c.AdminPass))
-	}
-	if len(c.AdminAllowlist) > 0 {
-		sb.WriteString("admin_allowlist")
-		for _, ip := range c.AdminAllowlist {
-			sb.WriteString(" " + ip)
-		}
-		sb.WriteString(";\n")
-	}
 
 	if c.LogDir != "" {
 		sb.WriteString(fmt.Sprintf("log_dir \"%s\";\n", c.LogDir))
-	}
-	if c.ConfDir != "" {
-		sb.WriteString(fmt.Sprintf("conf_dir \"%s\";\n", c.ConfDir))
 	}
 
 	if c.Security != nil {
