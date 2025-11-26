@@ -25,7 +25,10 @@ jobs:
   # JOB 1: Test et Build
   # -----------------------------
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     outputs:
       tag_name: ${{ steps.get_version.outputs.tag }}
     steps:
@@ -43,7 +46,8 @@ jobs:
         run: go test -v ./...
 
       - name: Build executable
-        run: go build -v -o titan-web-server ./cmd/server/main.go
+        run: |
+          go build -v -o titan-web-server${{ matrix.os == 'windows-latest' && '.exe' || '' }} ./cmd/server/main.go
 
       - name: Get Version
         id: get_version
@@ -59,8 +63,8 @@ jobs:
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: titan-web-server-linux-amd64
-          path: titan-web-server
+          name: titan-web-server-${{ matrix.os }}-amd64
+          path: titan-web-server${{ matrix.os == 'windows-latest' && '.exe' || '' }}
 
   # -----------------------------
   # JOB 2: Packaging (DEB/RPM)
@@ -75,7 +79,7 @@ jobs:
       - name: Download Build Artifact
         uses: actions/download-artifact@v4
         with:
-          name: titan-web-server-linux-amd64
+          name: titan-web-server-ubuntu-latest-amd64
           path: .
 
       - name: Install nFPM via Go and add to PATH
@@ -202,6 +206,12 @@ jobs:
           name: titan-web-server-packages
           path: packages/
 
+      - name: Download Windows Build Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: titan-web-server-windows-latest-amd64
+          path: packages/
+
       - name: Create Release & Tag 🚀
         uses: softprops/action-gh-release@v2
         with:
@@ -216,4 +226,5 @@ jobs:
             📦 **Artifacts included:**
             - .deb (Debian/Ubuntu)
             - .rpm (RHEL/CentOS)
+            - Windows executable
           files: packages/*
