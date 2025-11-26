@@ -91,15 +91,20 @@ func (l *Logger) getFile(domain, logType string) (io.Writer, error) {
 }
 
 // AccessLog writes an entry to the access log
-func (l *Logger) AccessLog(domain, method, path, remoteAddr string, status int, duration time.Duration) {
+func (l *Logger) AccessLog(domain, requestID, method, uri, clientIP string, status int, duration time.Duration) {
 	if !l.enabled {
 		return
 	}
 
-	// Format: [Time] ClientIP Method Path Status Duration
-	line := fmt.Sprintf("[%s] %s %s %s %d %v\n",
+	// Format: [Time] RequestID ClientIP Method URI Status Duration
+	line := fmt.Sprintf("[%s] %s %s %s %s %d %v\n",
 		time.Now().Format(time.RFC3339),
-		remoteAddr, method, path, status, duration,
+		requestID,
+		clientIP,
+		method,
+		uri,
+		status,
+		duration,
 	)
 
 	w, err := l.getFile(domain, "access")

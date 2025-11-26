@@ -3,8 +3,10 @@ package server
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"html/template"
@@ -56,13 +58,18 @@ func acmeHealthCheckWrapper(next http.Handler) http.Handler {
 //go:embed templates/error_4xx.html templates/error_5xx.html
 var templateFS embed.FS
 
+// A context key for the request ID
+type contextKey string
+
+const requestIDKey contextKey = "requestID"
+
 // ErrorData holds data for the error template
 type ErrorData struct {
-	Code     int
-	Title    string
-	Message  string
-	RayID    string
-	ClientIP string
+	Code      int
+	Title     string
+	Message   string
+	RequestID string
+	ClientIP  string
 }
 
 // Server holds the runtime state of the server
@@ -84,11 +91,25 @@ type Server struct {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+
+	// Generate a unique request ID
+	var requestID string
+	bytes := make([]byte, 16)
+	if _, err := rand.Read(bytes); err == nil {
+		requestID = hex.EncodeToString(bytes)
+	} else {
+		// Fallback to a timestamp-based ID
+		requestID = fmt.Sprintf("req-%d", time.Now().UnixNano())
+	}
+
+	// Add request ID to the context
+	ctx := context.WithValue(r.Context(), requestIDKey, requestID)
+	r = r.WithContext(ctx)
+
 	if s.acmeManager != nil && s.acmeManager.HandleChallenge(w, r) {
 		return
 	}
-
-	start := time.Now()
 	// Add global Server header
 	if isContainerized() {
 		w.Header().Set("Server", "Titan Web Container")
@@ -157,7 +178,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.renderError(rw, r, 404, "Site non trouvé", "Le domaine demandé n'est pas configuré sur ce serveur.")
 		// Log 404 for unknown host
 		if logger != nil {
-			logger.AccessLog("unknown", r.Method, r.URL.Path, r.RemoteAddr, 404, time.Since(start))
+			requestID, _ := r.Context().Value(requestIDKey).(string)
+			logger.AccessLog("unknown", requestID, r.Method, r.URL.String(), r.RemoteAddr, 404, time.Since(start))
 		}
 		return
 	}
@@ -179,7 +201,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		// Access Log
 		if logger != nil {
-			logger.AccessLog(matchedSite.Domain, r.Method, r.URL.Path, r.RemoteAddr, rw.Status(), time.Since(start))
+			requestID, _ := r.Context().Value(requestIDKey).(string)
+			logger.AccessLog(matchedSite.Domain, requestID, r.Method, r.URL.String(), r.RemoteAddr, rw.Status(), time.Since(start))
 		}
 	}()
 
@@ -537,12 +560,14 @@ func (s *Server) renderError(w http.ResponseWriter, r *http.Request, code int, t
 		return
 	}
 
+	requestID, _ := r.Context().Value(requestIDKey).(string)
+
 	data := ErrorData{
-		Code:     code,
-		Title:    title,
-		Message:  message,
-		RayID:    fmt.Sprintf("REQ-%d", time.Now().UnixNano()),
-		ClientIP: r.RemoteAddr,
+		Code:      code,
+		Title:     title,
+		Message:   message,
+		RequestID: requestID,
+		ClientIP:  r.RemoteAddr,
 	}
 
 	templateName := "error_4xx.html"
