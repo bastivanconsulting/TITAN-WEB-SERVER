@@ -70,10 +70,17 @@ func (n *Node) syncCertificates(apiKey string, httpsPort string) error {
 
 func (n *Node) buildManifest() ([]FileInfo, error) {
 	var manifest []FileInfo
+	clusterCertDir := filepath.Join(CertsDir, "cluster")
+
 	err := filepath.Walk(CertsDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
+
+		if info.IsDir() && path == clusterCertDir {
+			return filepath.SkipDir
+		}
+
 		if !info.IsDir() {
 			relPath, err := filepath.Rel(CertsDir, path)
 			if err != nil {
