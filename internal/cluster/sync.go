@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/raft"
@@ -103,8 +104,9 @@ func (n *Node) sendManifestToFollower(followerID, addr string, manifest []FileIn
 		log.Printf("Invalid follower address format '%s': %v", addr, err)
 		return
 	}
-	// Reconstruct with the correct HTTPS port
-	httpsAddr := net.JoinHostPort(host, httpsPort)
+	// Reconstruct with the correct HTTPS port, trimming any leading colon from the port
+	cleanPort := strings.TrimPrefix(httpsPort, ":")
+	httpsAddr := net.JoinHostPort(host, cleanPort)
 
 	url := fmt.Sprintf("https://%s%s", httpsAddr, SyncEndpoint)
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
@@ -181,7 +183,8 @@ func (n *Node) downloadFile(leaderID, leaderAddr, path, apiKey, httpsPort string
 	}
 
 	// Reconstruct with the correct HTTPS port
-	httpsAddr := net.JoinHostPort(host, httpsPort)
+	cleanPort := strings.TrimPrefix(httpsPort, ":")
+	httpsAddr := net.JoinHostPort(host, cleanPort)
 
 	url := fmt.Sprintf("https://%s%s?file=%s", httpsAddr, FileEndpoint, path)
 	req, err := http.NewRequest("GET", url, nil)
