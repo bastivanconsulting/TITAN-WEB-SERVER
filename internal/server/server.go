@@ -757,8 +757,7 @@ func (s *Server) Start() error {
 		}
 	}
 
-	// Start HTTP Server
-	httpPort80Configured := s.Config.HTTPPort == ":80" || s.Config.HTTPPort == "80"
+	// Start HTTP Server if configured
 	if s.Config.HTTPPort != "" {
 		go func() {
 			log.Printf("Starting HTTP server on %s\n", s.Config.HTTPPort)
@@ -770,10 +769,13 @@ func (s *Server) Start() error {
 		}()
 	}
 
-	// If ACME is enabled and no server is running on port 80, start one.
+	// If ACME is enabled and no server is running on port 80 (either because HTTP is disabled
+	// or on another port), start a dedicated listener for the challenge.
+	httpPort80Configured := s.Config.HTTPPort == ":80" || s.Config.HTTPPort == "80"
 	if s.acmeManager != nil && !httpPort80Configured {
 		go func() {
 			log.Println("Starting dedicated ACME challenge server on :80")
+			// Pass 's' (the main server mux) to handle the challenge
 			err := http.ListenAndServe(":80", s)
 			if err != nil {
 				log.Printf("WARNING: Could not start ACME challenge server on port 80: %v. Let's Encrypt may fail.", err)
