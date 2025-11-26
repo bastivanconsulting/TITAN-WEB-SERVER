@@ -186,6 +186,44 @@ Titan Server intègre un moteur de consensus **Raft** pour la synchronisation au
 *   **OCSP Stapling** : Activé par défaut.
 *   **Audit Logs** : Logs d'accès et d'erreurs compatibles ISO 27001.
 
+### Module WAF (Web Application Firewall)
+
+Titan intègre un WAF pour protéger vos applications contre les attaques courantes (OWASP Top 10). Le WAF s'active par site et inspecte le trafic entrant.
+
+**Exemple de configuration WAF pour un site :**
+```nginx
+server {
+    server_name www.votre-site.com;
+
+    # ... autres directives ...
+
+    waf {
+        enabled on;
+        rate_limit 100; # Req/min par IP
+        deny_countries CN RU IR;
+        deny_list 1.2.3.4 5.6.7.8;
+        under_attack_mode off;
+    }
+}
+```
+
+**Directives de configuration :**
+*   `enabled [on|off];` : Active ou désactive le WAF pour ce site.
+*   `rate_limit [nombre];` : Limite le nombre de requêtes par minute pour une même adresse IP.
+*   `allow_list [ip1] [ip2] ...;` : Liste blanche d'IPs qui contournent le WAF.
+*   `deny_list [ip1] [ip2] ...;` : Liste noire d'IPs à bloquer.
+*   `deny_countries [code1] [code2] ...;` : Bloque le trafic provenant des pays spécifiés (codes ISO 3166-1 alpha-2).
+*   `under_attack_mode [on|off];` : Active un mode de sécurité élevé qui bloque temporairement tout le trafic.
+
+**Configuration Globale Requise pour GeoIP :**
+Pour utiliser `deny_countries`, vous devez spécifier le chemin vers une base de données GeoIP (format MMDB) dans votre configuration globale :
+```nginx
+geoip_db_path "/path/to/GeoLite2-Country.mmdb";
+```
+
+**Journalisation (Logging) :**
+Les requêtes bloquées par le WAF sont enregistrées dans un fichier de log dédié : `/var/log/titan/votredomaine-waf.log`.
+
 ---
 
 ## 🔍 Dépannage
