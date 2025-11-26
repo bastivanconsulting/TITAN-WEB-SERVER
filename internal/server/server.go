@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -725,8 +726,8 @@ func (s *Server) Start() error {
 
 
 	// Ensure default self-signed certs exist
-	defaultCert := "server.crt"
-	defaultKey := "server.key"
+	defaultCert := filepath.Join(s.Config.SSLPath, "server.crt")
+	defaultKey := filepath.Join(s.Config.SSLPath, "server.key")
 	if err := tlsutil.EnsureDefaultCert(defaultCert, defaultKey); err != nil {
 		fmt.Printf("Warning: Could not generate default self-signed certs: %v\n", err)
 	}
@@ -868,12 +869,12 @@ func (s *Server) getConfigForClient(ocspManager *OCSPManager, certMap map[string
 		}
 
 		// 3. Check for ACME certificate
-		certDir := acme.DefaultCertPath
+		certDir := filepath.Join(s.Config.SSLPath, "certs", "acme")
 		if s.Config.ACME != nil && s.Config.ACME.CertPath != "" {
 			certDir = s.Config.ACME.CertPath
 		}
-		acmeCertPath := certDir + domain + ".crt"
-		acmeKeyPath := certDir + domain + ".key"
+		acmeCertPath := filepath.Join(certDir, domain+".crt")
+		acmeKeyPath := filepath.Join(certDir, domain+".key")
 		if _, err := os.Stat(acmeCertPath); err == nil {
 			cert, err := tls.LoadX509KeyPair(acmeCertPath, acmeKeyPath)
 			if err == nil {

@@ -11,6 +11,7 @@ require (
 	github.com/hashicorp/raft-boltdb v0.0.0-20251103221153-05f9dd7a5148
 	github.com/oschwald/geoip2-golang v1.13.0
 	github.com/quic-go/quic-go v0.57.0
+	github.com/stretchr/testify v1.11.1
 	github.com/tg123/go-htpasswd v1.2.4
 	github.com/yookoala/gofast v0.8.0
 	golang.org/x/crypto v0.45.0
@@ -22,6 +23,7 @@ require (
 	github.com/armon/go-metrics v0.4.1 // indirect
 	github.com/boltdb/bolt v1.3.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
+	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dlclark/regexp2 v1.11.4 // indirect
 	github.com/fatih/color v1.13.0 // indirect
 	github.com/go-jose/go-jose/v4 v4.0.1 // indirect
@@ -37,6 +39,7 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/miekg/dns v1.1.58 // indirect
 	github.com/oschwald/maxminddb-golang v1.13.0 // indirect
+	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	golang.org/x/mod v0.29.0 // indirect
 	golang.org/x/net v0.47.0 // indirect
@@ -45,4 +48,5 @@ require (
 	golang.org/x/text v0.31.0 // indirect
 	golang.org/x/tools v0.38.0 // indirect
 	golang.org/x/tools/godoc v0.1.0-deprecated // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
