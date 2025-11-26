@@ -116,7 +116,15 @@ func EncodeToConf(c *Config) string {
 					sb.WriteString(fmt.Sprintf("            fastcgi_pass %s;\n", route.ProxyTarget))
 				}
 			}
+
+			if route.WAF != nil {
+				sb.WriteString(encodeWAFBlock(route.WAF, "            "))
+			}
 			sb.WriteString("        }\n")
+		}
+
+		if site.WAF != nil {
+			sb.WriteString(encodeWAFBlock(site.WAF, "        "))
 		}
 
 		sb.WriteString("    }\n")
@@ -124,4 +132,50 @@ func EncodeToConf(c *Config) string {
 	sb.WriteString("}\n")
 
 	return sb.String()
+}
+
+// encodeWAFBlock generates the string representation for a WAFConfig
+func encodeWAFBlock(w *WAFConfig, indent string) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("%swaf {\n", indent))
+	innerIndent := indent + "    "
+
+	// Note: We write the config explicitly rather than relying on defaults
+	sb.WriteString(fmt.Sprintf("%senabled %s;\n", innerIndent, boolToOnOff(w.Enabled)))
+	sb.WriteString(fmt.Sprintf("%sunder_attack_mode %s;\n", innerIndent, boolToOnOff(w.UnderAttackMode)))
+
+	if w.RateLimit > 0 {
+		sb.WriteString(fmt.Sprintf("%srate_limit %d;\n", innerIndent, w.RateLimit))
+	}
+
+	if len(w.AllowList) > 0 {
+		sb.WriteString(fmt.Sprintf("%sallow_list %s;\n", innerIndent, strings.Join(w.AllowList, " ")))
+	}
+	if len(w.DenyList) > 0 {
+		sb.WriteString(fmt.Sprintf("%sdeny_list %s;\n", innerIndent, strings.Join(w.DenyList, " ")))
+	}
+	if len(w.DenyCountries) > 0 {
+		sb.WriteString(fmt.Sprintf("%sdeny_countries %s;\n", innerIndent, strings.Join(w.DenyCountries, " ")))
+	}
+
+	sb.WriteString(fmt.Sprintf("%scheck_sqli %s;\n", innerIndent, boolToOnOff(w.CheckSQLi)))
+	sb.WriteString(fmt.Sprintf("%scheck_xss %s;\n", innerIndent, boolToOnOff(w.CheckXSS)))
+	sb.WriteString(fmt.Sprintf("%scheck_lfi %s;\n", innerIndent, boolToOnOff(w.CheckLFI)))
+	sb.WriteString(fmt.Sprintf("%scheck_ua %s;\n", innerIndent, boolToOnOff(w.CheckUA)))
+
+	if w.JSChallenge != nil {
+		sb.WriteString(fmt.Sprintf("%sjs_challenge {\n", innerIndent))
+		sb.WriteString(fmt.Sprintf("%s    enabled %s;\n", innerIndent, boolToOnOff(w.JSChallenge.Enabled)))
+		sb.WriteString(fmt.Sprintf("%s}\n", innerIndent))
+	}
+
+	sb.WriteString(fmt.Sprintf("%s}\n", indent))
+	return sb.String()
+}
+
+func boolToOnOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
 }
