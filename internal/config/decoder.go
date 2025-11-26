@@ -162,7 +162,15 @@ func decodeSiteBlock(b parser.Block) (*Site, error) {
 				}
 			}
 		case "waf":
-			if site.WAF == nil { site.WAF = &WAF{Enabled: true} }
+			if site.WAF == nil {
+				site.WAF = &WAF{
+					Enabled:   true,
+					CheckSQLi: true,
+					CheckXSS:  true,
+					CheckLFI:  true,
+					CheckUA:   true,
+				}
+			}
 			for _, d := range subBlock.Directives {
 				switch d.Name {
 				case "enabled":
@@ -183,6 +191,14 @@ func decodeSiteBlock(b parser.Block) (*Site, error) {
 					site.WAF.DenyList = d.Parameters
 				case "deny_countries":
 					site.WAF.DenyCountries = d.Parameters
+				case "check_sqli":
+					site.WAF.CheckSQLi = d.Parameters[0] == "on"
+				case "check_xss":
+					site.WAF.CheckXSS = d.Parameters[0] == "on"
+				case "check_lfi":
+					site.WAF.CheckLFI = d.Parameters[0] == "on"
+				case "check_ua":
+					site.WAF.CheckUA = d.Parameters[0] == "on"
 				}
 			}
 		}
