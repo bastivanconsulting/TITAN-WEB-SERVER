@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -36,10 +37,11 @@ type ErrorHandlerFunc func(w http.ResponseWriter, r *http.Request, err error)
 
 // ProxyOptions configures the proxy
 type ProxyOptions struct {
-	Targets      []string
-	ErrorHandler ErrorHandlerFunc
-	Cache        cache.Cache
-	CacheTTL     time.Duration
+	Targets        []string
+	ErrorHandler   ErrorHandlerFunc
+	Cache          cache.Cache
+	CacheTTL       time.Duration
+	ProxySSLVerify bool
 }
 
 // limitRecorder captures the response status code, headers and body up to a limit
@@ -99,6 +101,12 @@ func NewProxyHandler(opts ProxyOptions) (http.Handler, error) {
 		}
 
 		proxy := httputil.NewSingleHostReverseProxy(targetURL)
+
+		if opts.ProxySSLVerify == false {
+			proxy.Transport = &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			}
+		}
 
 		// Custom Director modification
 		originalDirector := proxy.Director
@@ -254,8 +262,8 @@ func NewProxyHandler(opts ProxyOptions) (http.Handler, error) {
 			return
 		}
 
-		// Only cache GET requests
-		if r.Method != http.MethodGet {
+		// Only cache GET requests, and skip caching for Range requests
+		if r.Method != http.MethodGet || r.Header.Get("Range") != "" {
 			proxyHandler.ServeHTTP(w, r)
 			return
 		}

@@ -2,8 +2,8 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"embed"
 	"errors"
 	"fmt"
@@ -18,15 +18,17 @@ import (
 	"time"
 
 	"golang.org/x/crypto/acme/autocert"
+	"golang.org/x/time/rate"
 
 	"github.com/quic-go/quic-go/http3"
 	"github.com/yookoala/gofast"
 
-	"titan-web-server/internal/api"
 	"titan-web-server/internal/auth"
 	"titan-web-server/internal/cache"
 	"titan-web-server/internal/cluster"
 	"titan-web-server/internal/config"
+	"titan-web-server/internal/htaccess"
+	"titan-web-server/internal/module"
 	"titan-web-server/internal/proxy"
 	"titan-web-server/internal/tlsutil"
 	"titan-web-server/internal/waf"
@@ -51,11 +53,8 @@ func acmeHealthCheckWrapper(next http.Handler) http.Handler {
 	})
 }
 
-//go:embed templates/error.html
+//go:embed templates/error_4xx.html templates/error_5xx.html
 var templateFS embed.FS
-
-//go:embed templates/admin.html
-var adminFS embed.FS
 
 // ErrorData holds data for the error template
 type ErrorData struct {
@@ -72,8 +71,6 @@ type Server struct {
 	ConfigPath    string
 	Config        *config.Config
 	Tpl           *template.Template
-	APIHandler    *api.Handler
-	AuthProvider  auth.Provider
 	Cache         cache.Cache
 	Logger        *Logger
 	Debug         bool
@@ -82,15 +79,17 @@ type Server struct {
 	phpHandlers   map[string]http.Handler
 	proxyHandlers map[string]http.Handler
 	wafInstances  map[string]*waf.WAF
+	jsModules     map[string]*module.JSModule
+	htaccess      map[string]*htaccess.HTAccess
 }
 
 // NewServer creates a new server instance
 func NewServer(cfg *config.Config, configPath string, debug bool) *Server {
-	tpl, err := template.ParseFS(templateFS, "templates/error.html")
+	tpl, err := template.ParseFS(templateFS, "templates/*.html")
 	if err != nil {
 		// Fallback if template is missing or error
 		tpl = nil
-		fmt.Printf("Warning: Could not load error.html: %v\n", err)
+		fmt.Printf("Warning: Could not load error templates: %v\n", err)
 	}
 
 	// Initialize Cache
@@ -131,104 +130,16 @@ func NewServer(cfg *config.Config, configPath string, debug bool) *Server {
 		phpHandlers:   make(map[string]http.Handler),
 		proxyHandlers: make(map[string]http.Handler),
 		wafInstances:  make(map[string]*waf.WAF),
-	}
-
-	// Initialize API Handler (srv implements ConfigManager interface implicitly)
-	srv.APIHandler = api.NewHandler(srv)
-
-	// Initialize Auth Provider
-	// Check if configured for PAM (we can add a config field later, or infer)
-	// For now, if AdminUser is "pam", we try PAM. Or we add a field to Config.
-	// Since I can't easily change the Config struct without breaking existing JSON,
-	// I'll check if AdminUser is "system" or a specific flag.
-	// Actually, let's assume if AdminPass is empty but User is set, it might use PAM?
-	// No, that's ambiguous.
-	// Let's stick to SimpleProvider unless a specific env var or config is set.
-	// But the user *requested* PAM.
-	// I'll add logic: if AdminUser starts with "pam:", use the rest as service name?
-	// Or just try PAM if Simple fails? No.
-	// I will modify Config to support `AuthType`.
-
-	if cfg.AdminUser == "pam" {
-		pamProvider, err := auth.NewPAMProvider("login") // "login" is a standard service
-		if err != nil {
-			fmt.Printf("Error initializing PAM: %v. Falling back to simple auth.\n", err)
-			srv.AuthProvider = auth.NewSimpleProvider("admin", "admin")
-		} else {
-			srv.AuthProvider = pamProvider
-			fmt.Println("Authentication: PAM enabled (service: login)")
-		}
-	} else {
-		user := cfg.AdminUser
-		pass := cfg.AdminPass
-		if user == "" { user = "admin" }
-		if pass == "" { pass = "admin" }
-		srv.AuthProvider = auth.NewSimpleProvider(user, pass)
+		jsModules:     make(map[string]*module.JSModule),
+		htaccess:      make(map[string]*htaccess.HTAccess),
 	}
 
 	// Initialize handlers (this also sorts routes)
-	if err := srv.UpdateConfig(cfg); err != nil {
+	if err := srv.ApplyConfig(cfg); err != nil {
 		panic(fmt.Sprintf("Failed to initialize configuration: %v", err))
 	}
 
 	return srv
-}
-
-// GetConfig returns a copy of the current configuration (thread-safe)
-func (s *Server) GetConfig() *config.Config {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	// Return a copy or pointer? Pointer is dangerous if modified by caller.
-	// Since json encoder reads it, pointer is okay as long as we don't modify it.
-	// For strict safety we should deep copy, but for this step returning pointer is acceptable
-	// assuming the API handler only marshals it.
-	return s.Config
-}
-
-// UpdateConfig updates the server configuration thread-safely
-func (s *Server) UpdateConfig(cfg *config.Config) error {
-	// If we are part of a cluster and this is a user request (not an internal Raft callback),
-	// we should route this through Raft.
-	// However, UpdateConfig is called by the Raft callback too.
-	// We need to distinguish or ensure we don't infinitely loop.
-	// The Raft callback calls s.UpdateConfig.
-	// The API handler calls s.UpdateConfig.
-
-	// Implementation:
-	// If ClusterNode is present, we should assume the API handler calling this wants to replicate.
-	// BUT `UpdateConfig` is also used by `main.go` for initial load and file watcher.
-	// We should separate "ProposeConfig" from "ApplyConfig".
-
-	// For now, let's handle the local update logic here.
-	// The API Handler should call ProposeConfig if cluster is active.
-	// But `UpdateConfig` is the method satisfying `ConfigManager` interface.
-
-	// Let's modify UpdateConfig to check if it should replicate.
-	// This is slightly messy. Better to have API handler check.
-	// But API handler doesn't know about ClusterNode directly (interface).
-	// So we handle it here.
-
-	s.mu.Lock()
-	clusterNode := s.ClusterNode
-	s.mu.Unlock()
-
-	// If we have a cluster node, we must replicate unless this update came FROM the cluster.
-	// But we don't know source here.
-	// Simpler: The API will call `UpdateConfig`.
-	// If `ClusterNode` is set, `UpdateConfig` should convert to text and call `node.ApplyConfigUpdate`.
-	// Then `ApplyConfigUpdate` will go through Raft, then `FSM.Apply` -> `callback` -> `s.applyConfigInternal`.
-
-	// To avoid loop, we need `applyConfigInternal` method.
-	// `UpdateConfig` will be the public entry point.
-
-	if clusterNode != nil {
-		// We are in a cluster. We must go through Raft.
-		confData := config.EncodeToConf(cfg)
-		return clusterNode.ApplyConfigUpdate([]byte(confData))
-	}
-
-	// Local update only
-	return s.ApplyConfig(cfg)
 }
 
 // ApplyConfig performs the actual update of the runtime state (internal use or via Raft)
@@ -241,15 +152,6 @@ func (s *Server) ApplyConfig(cfg *config.Config) error {
 		s.Logger.Close()
 		s.Logger = NewLogger(cfg.LogDir)
 		s.Logger.EnsureDir()
-	}
-
-	// Update Auth Provider credentials if changed
-	if cfg.AdminUser != "" || cfg.AdminPass != "" {
-		user := cfg.AdminUser
-		pass := cfg.AdminPass
-		if user == "" { user = "admin" }
-		if pass == "" { pass = "admin" }
-		s.AuthProvider = auth.NewSimpleProvider(user, pass)
 	}
 
 	// Sort routes
@@ -266,78 +168,9 @@ func (s *Server) ApplyConfig(cfg *config.Config) error {
 		return err
 	}
 
-	// Persist configuration to disk
-	return s.saveConfigLocked()
-}
-
-func (s *Server) saveConfigLocked() error {
-	path := s.ConfigPath
-	if path == "" {
-		path = "titan-server.conf"
-	}
-	file, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("failed to open config file for writing: %w", err)
-	}
-	defer file.Close()
-
-	// Use the new encoder
-	content := config.EncodeToConf(s.Config)
-	if _, err := file.WriteString(content); err != nil {
-		return fmt.Errorf("failed to write config: %w", err)
-	}
 	return nil
 }
 
-// JoinCluster joins a new node to the cluster
-func (s *Server) JoinCluster(nodeID, addr string) error {
-	s.mu.RLock()
-	node := s.ClusterNode
-	s.mu.RUnlock()
-
-	if node == nil {
-		return errors.New("clustering not enabled on this node")
-	}
-
-	return node.Join(nodeID, addr)
-}
-
-// GetClusterStatus returns the status of the cluster
-func (s *Server) GetClusterStatus() map[string]interface{} {
-	s.mu.RLock()
-	node := s.ClusterNode
-	s.mu.RUnlock()
-
-	status := make(map[string]interface{})
-	if node == nil {
-		status["enabled"] = false
-		return status
-	}
-
-	status["enabled"] = true
-	status["leader"] = node.Raft.Leader()
-	status["state"] = node.Raft.State().String()
-
-	// We can get more stats from node.Raft.Stats()
-	stats := node.Raft.Stats()
-	status["stats"] = stats
-
-	// Get peers/servers
-	future := node.Raft.GetConfiguration()
-	if err := future.Error(); err == nil {
-		var servers []map[string]string
-		for _, srv := range future.Configuration().Servers {
-			servers = append(servers, map[string]string{
-				"id": string(srv.ID),
-				"address": string(srv.Address),
-				"suffrage": srv.Suffrage.String(),
-			})
-		}
-		status["servers"] = servers
-	}
-
-	return status
-}
 
 func (s *Server) initHandlersLocked() error {
 	// Clear existing handlers
@@ -349,6 +182,10 @@ func (s *Server) initHandlersLocked() error {
 		w.Close()
 		delete(s.wafInstances, domain)
 	}
+
+	// Clear old JS modules
+	s.jsModules = make(map[string]*module.JSModule)
+	s.htaccess = make(map[string]*htaccess.HTAccess)
 
 	for i := range s.Config.Sites {
 		site := &s.Config.Sites[i]
@@ -371,6 +208,18 @@ func (s *Server) initHandlersLocked() error {
 			} else {
 				s.wafInstances[site.Domain] = w
 				log.Printf("WAF handler initialized for site: %s", site.Domain)
+			}
+		}
+
+		if site.JSModule != "" {
+			if _, exists := s.jsModules[site.JSModule]; !exists {
+				m, err := module.New(site.JSModule)
+				if err != nil {
+					log.Printf("Error loading JS module for site %s: %v", site.Domain, err)
+				} else {
+					s.jsModules[site.JSModule] = m
+					log.Printf("JS module loaded for site: %s", site.Domain)
+				}
 			}
 		}
 
@@ -418,16 +267,43 @@ func (s *Server) initHandlersLocked() error {
 				}
 
 				opts := proxy.ProxyOptions{
-					Targets:      route.Upstreams,
-					ErrorHandler: errorHandler,
-					Cache:        s.Cache,
-					CacheTTL:     60 * time.Second, // Default TTL
+					Targets:        route.Upstreams,
+					ErrorHandler:   errorHandler,
+					Cache:          s.Cache,
+					CacheTTL:       60 * time.Second, // Default TTL
+					ProxySSLVerify: route.ProxySSLVerify,
 				}
 				proxyHandler, err := proxy.NewProxyHandler(opts)
 				if err != nil {
 					return fmt.Errorf("error initializing proxy for %s: %v", key, err)
 				}
 				s.proxyHandlers[key] = proxyHandler
+			}
+			if route.JSModule != "" {
+				if _, exists := s.jsModules[route.JSModule]; !exists {
+					m, err := module.New(route.JSModule)
+					if err != nil {
+						log.Printf("Error loading JS module for route %s: %v", route.Path, err)
+					} else {
+						s.jsModules[route.JSModule] = m
+						log.Printf("JS module loaded for route: %s", route.Path)
+					}
+				}
+			}
+
+			if (route.Type == "static" || route.Type == "php") && route.FileRoot != "" {
+				htaccessPath := route.FileRoot + "/.htaccess"
+				if _, err := os.Stat(htaccessPath); err == nil {
+					if _, exists := s.htaccess[htaccessPath]; !exists {
+						hta, err := htaccess.Parse(htaccessPath)
+						if err != nil {
+							log.Printf("Error parsing .htaccess file for route %s: %v", route.Path, err)
+						} else {
+							s.htaccess[htaccessPath] = hta
+							log.Printf(".htaccess file loaded for route: %s", route.Path)
+						}
+					}
+				}
 			}
 		}
 	}
@@ -460,6 +336,7 @@ func (s *Server) renderError(w http.ResponseWriter, r *http.Request, code int, t
 		fmt.Fprintf(w, "%d - %s: %s", code, title, message)
 		return
 	}
+
 	data := ErrorData{
 		Code:     code,
 		Title:    title,
@@ -467,7 +344,13 @@ func (s *Server) renderError(w http.ResponseWriter, r *http.Request, code int, t
 		RayID:    fmt.Sprintf("REQ-%d", time.Now().UnixNano()),
 		ClientIP: r.RemoteAddr,
 	}
-	s.Tpl.Execute(w, data)
+
+	templateName := "error_4xx.html"
+	if code >= 500 {
+		templateName = "error_5xx.html"
+	}
+
+	s.Tpl.ExecuteTemplate(w, templateName, data)
 }
 
 // ServeHTTP implements the http.Handler interface
@@ -486,39 +369,22 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 0. Intercept API and Admin requests
-	// Note: Internal API for cluster sync bypasses normal auth for performance,
-	// but relies on the shared API key.
-	isCertSync := strings.HasPrefix(r.URL.Path, "/api/internal/certs/")
-	isInternalAPI := strings.HasPrefix(r.URL.Path, "/api/internal/")
-
-	// Enforce mTLS at the application layer for internal APIs.
-	// The server's TLS config is set to `VerifyClientCertIfGiven` to allow the cert sync
-	// bootstrap to work. For all other internal endpoints, we must enforce a valid cert.
-	if isInternalAPI && !isCertSync {
-		if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 {
-			http.Error(w, "Forbidden: A valid client certificate is required for this endpoint", http.StatusForbidden)
-			return
+	// HTTPS Redirect
+	if r.TLS == nil {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		for _, site := range s.Config.Sites {
+			if site.Domain == r.Host && site.SSL != nil && site.SSL.Enabled {
+				target := "https://" + r.Host + r.URL.Path
+				if r.URL.RawQuery != "" {
+					target += "?" + r.URL.RawQuery
+				}
+				http.Redirect(w, r, target, http.StatusPermanentRedirect)
+				return
+			}
 		}
 	}
 
-
-	if isCertSync {
-		s.handleCertSync(rw, r)
-		return
-	}
-	if strings.HasPrefix(r.URL.Path, "/api/") {
-		s.handleAPI(rw, r)
-		return
-	}
-	if strings.HasPrefix(r.URL.Path, "/admin") {
-		s.handleAdmin(rw, r)
-		return
-	}
-	if r.URL.Path == "/login" && r.Method == http.MethodPost {
-		s.handleLogin(rw, r)
-		return
-	}
 
 	// 1. Match Host
 	host := r.Host
@@ -580,10 +446,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Wrap with WAF if enabled for this site
-	s.mu.RLock()
-	siteWAF, wafEnabled := s.wafInstances[matchedSite.Domain]
-	s.mu.RUnlock()
+	// Execute JS module if configured
+	var jsModule *module.JSModule
+	if matchedSite.JSModule != "" {
+		s.mu.RLock()
+		jsModule = s.jsModules[matchedSite.JSModule]
+		s.mu.RUnlock()
+	}
 
 	// The core routing and dispatching logic is defined as a handler.
 	coreHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -602,37 +471,53 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// 3. Dispatch
-		switch matchedRoute.Type {
-		case "proxy":
-			proxyHandler := s.getProxyHandler(matchedRoute)
-			if proxyHandler == nil {
-				s.renderError(w, r, 500, "Erreur Configuration", "Handler proxy non initialisé")
-				if logger != nil {
-					logger.ErrorLog(matchedSite.Domain, "Proxy handler not initialized")
+		// Override site-level JS module if route-level is set
+		if matchedRoute.JSModule != "" {
+			s.mu.RLock()
+			jsModule = s.jsModules[matchedRoute.JSModule]
+			s.mu.RUnlock()
+		}
+
+		// Apply .htaccess rewrite rules
+		if (matchedRoute.Type == "static" || matchedRoute.Type == "php") && matchedRoute.FileRoot != "" {
+			htaccessPath := matchedRoute.FileRoot + "/.htaccess"
+			s.mu.RLock()
+			hta, exists := s.htaccess[htaccessPath]
+			s.mu.RUnlock()
+			if exists {
+				newURI := hta.Evaluate(r.URL.Path, r.Header)
+				if newURI != r.URL.Path {
+					r.URL.Path = newURI
 				}
+			}
+		}
+
+		// Execute JS module if it exists
+		if jsModule != nil {
+			err := jsModule.Run(r, w)
+			if err != nil {
+				s.renderError(w, r, 500, "Erreur de module", fmt.Sprintf("Le module JavaScript a rencontré une erreur: %v", err))
 				return
 			}
-			proxyHandler.ServeHTTP(w, r)
-		case "static":
-			fs := http.FileServer(http.Dir(matchedRoute.FileRoot))
-			// Strip prefix so /static/foo.css looks for foo.css in root
-			http.StripPrefix(matchedRoute.Path, fs).ServeHTTP(w, r)
-		case "php":
-			handler := s.getPHPHandler(matchedRoute)
-			if handler != nil {
-				handler.ServeHTTP(w, r)
-			} else {
-				s.renderError(w, r, 500, "Erreur Configuration", "Handler PHP non initialisé")
-				if logger != nil {
-					logger.ErrorLog(matchedSite.Domain, "PHP handler not initialized")
-				}
-			}
-
-		default:
-			s.renderError(w, r, 500, "Erreur Configuration", "Type de route invalide.")
 		}
+
+		// Apply Basic Auth if configured
+		if matchedRoute.AuthBasicUserFile != "" {
+			auth.BasicAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// 3. Dispatch
+				s.dispatch(w, r, matchedRoute, matchedSite.Domain)
+			}), matchedRoute.AuthBasic, matchedRoute.AuthBasicUserFile).ServeHTTP(w, r)
+			return
+		}
+
+		// 3. Dispatch
+		s.dispatch(w, r, matchedRoute, matchedSite.Domain)
 	})
+
+	// Wrap with WAF if enabled for this site
+	s.mu.RLock()
+	siteWAF, wafEnabled := s.wafInstances[matchedSite.Domain]
+	s.mu.RUnlock()
 
 	var finalHandler http.Handler = coreHandler
 	if wafEnabled {
@@ -642,54 +527,65 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	finalHandler.ServeHTTP(rw, r)
 }
 
-// WatchConfig polls the configuration file for changes
-func (s *Server) WatchConfig() {
-	if s.ConfigPath == "" {
-		return
+func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, matchedRoute *config.Route, domain string) {
+	if matchedRoute.LimitRate > 0 {
+		limiter := rate.NewLimiter(rate.Limit(matchedRoute.LimitRate*1024), 2048*1024) // Burst of 2MB
+		w = &rateLimitedResponseWriter{ResponseWriter: w, limiter: limiter, ctx: r.Context()}
 	}
 
-	var lastMod time.Time
-	info, err := os.Stat(s.ConfigPath)
-	if err == nil {
-		lastMod = info.ModTime()
-	}
-
-	ticker := time.NewTicker(2 * time.Second)
-	go func() {
-		for range ticker.C {
-			info, err := os.Stat(s.ConfigPath)
-			if err != nil {
-				continue
+	switch matchedRoute.Type {
+	case "proxy":
+		proxyHandler := s.getProxyHandler(matchedRoute)
+		if proxyHandler == nil {
+			s.renderError(w, r, 500, "Erreur Configuration", "Handler proxy non initialisé")
+			if s.Logger != nil {
+				s.Logger.ErrorLog(domain, "Proxy handler not initialized")
 			}
-			if info.ModTime().After(lastMod) {
-				lastMod = info.ModTime()
-				fmt.Println("Config file changed, reloading...")
-
-				newCfg, err := config.LoadConfig(s.ConfigPath)
-				if err != nil {
-					fmt.Printf("Error reloading config (keeping old config): %v\n", err)
-					continue
-				}
-
-				if err := newCfg.Validate(); err != nil {
-					fmt.Printf("Config validation failed (keeping old config): %v\n", err)
-					continue
-				}
-
-				if err := s.UpdateConfig(newCfg); err != nil {
-					fmt.Printf("Error updating config: %v\n", err)
-				} else {
-					fmt.Println("Configuration reloaded successfully.")
-				}
+			return
+		}
+		proxyHandler.ServeHTTP(w, r)
+	case "static":
+		fs := http.FileServer(http.Dir(matchedRoute.FileRoot))
+		// Strip prefix so /static/foo.css looks for foo.css in root
+		http.StripPrefix(matchedRoute.Path, fs).ServeHTTP(w, r)
+	case "php":
+		handler := s.getPHPHandler(matchedRoute)
+		if handler != nil {
+			handler.ServeHTTP(w, r)
+		} else {
+			s.renderError(w, r, 500, "Erreur Configuration", "Handler PHP non initialisé")
+			if s.Logger != nil {
+				s.Logger.ErrorLog(domain, "PHP handler not initialized")
 			}
 		}
-	}()
+
+	default:
+		s.renderError(w, r, 500, "Erreur Configuration", "Type de route invalide.")
+	}
 }
 
 // ResponseWriter wrapper to capture status code
 type ResponseWriter struct {
 	http.ResponseWriter
 	status int
+}
+
+// rateLimitedResponseWriter wraps a http.ResponseWriter to limit the response writing speed.
+type rateLimitedResponseWriter struct {
+	http.ResponseWriter
+	limiter *rate.Limiter
+	ctx     context.Context
+}
+
+func (w *rateLimitedResponseWriter) Write(p []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(p)
+	if err != nil {
+		return n, err
+	}
+	if err := w.limiter.WaitN(w.ctx, n); err != nil {
+		return n, err
+	}
+	return n, nil
 }
 
 func NewResponseWriter(w http.ResponseWriter) *ResponseWriter {
@@ -772,8 +668,8 @@ func (s *Server) Start() error {
 
 	for _, site := range s.Config.Sites {
 		if site.SSL != nil && site.SSL.Enabled {
-			if site.SSL.Provider == "manual" {
-				cert, err := tls.LoadX509KeyPair(site.SSL.CertFile, site.SSL.KeyFile)
+			if site.SSL.Certificate != "" && site.SSL.CertificateKey != "" {
+				cert, err := tls.LoadX509KeyPair(site.SSL.Certificate, site.SSL.CertificateKey)
 				if err != nil {
 					return fmt.Errorf("error loading cert for %s: %w", site.Domain, err)
 				}
@@ -919,207 +815,8 @@ func (s *Server) Start() error {
 	return <-errChan
 }
 
-func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
-	// 1. IP Allowlist Check
-	s.mu.RLock()
-	allowlist := s.Config.AdminAllowlist
-	apiKey := s.Config.AdminAPIKey
-	s.mu.RUnlock()
-
-	if len(allowlist) > 0 {
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err != nil {
-			// If RemoteAddr doesn't have port (internal/test?), use as is
-			host = r.RemoteAddr
-		}
-
-		allowed := false
-		for _, ip := range allowlist {
-			if ip == host || ip == "0.0.0.0" {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
-			http.Error(w, "Forbidden (IP)", http.StatusForbidden)
-			return
-		}
-	}
-
-	// 2. API Key Check
-	keyHeader := r.Header.Get("X-API-Key")
-	if keyHeader != apiKey {
-		// Return JSON error for better API client handling
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		w.Write([]byte(`{"error": "Forbidden", "message": "Invalid or missing API Key"}`))
-		return
-	}
-
-	s.APIHandler.ServeHTTP(w, r)
-}
-
-func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
-	// Simple serve of admin.html
-	// Security: The admin page itself might not need key to LOAD, but needs key to SAVE.
-	// However, seeing the config requires GET /api/config which is protected.
-	// So we can serve the HTML public to allowed IPs.
-
-	s.mu.RLock()
-	allowlist := s.Config.AdminAllowlist
-	s.mu.RUnlock()
-
-	if len(allowlist) > 0 {
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err != nil {
-			host = r.RemoteAddr
-		}
-
-		allowed := false
-		for _, ip := range allowlist {
-			if ip == host || ip == "0.0.0.0" {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
-			http.Error(w, "Forbidden", http.StatusForbidden)
-			return
-		}
-	}
-
-	content, err := adminFS.ReadFile("templates/admin.html")
-	if err != nil {
-		http.Error(w, "Admin panel not found", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html")
-	w.Write(content)
-}
-
-func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	username := r.FormValue("username")
-	password := r.FormValue("password")
-
-	s.mu.RLock()
-	provider := s.AuthProvider
-	s.mu.RUnlock()
-
-	if provider.Login(username, password) {
-		// In a real app, issue a session cookie/JWT.
-		// For this MVP, we just return success, and the frontend might store the API key or similar.
-		// Note: The prompt asks for PAM auth for UI. We are simulating the "Login" part.
-		// Since the API requires API Key, maybe this login returns the API key?
-		// Or just confirms auth.
-
-		// Let's assume successful login returns the API Key (if we treat the API key as the session token for now,
-		// although that's mixing concepts, it's a simple way to bootstrap).
-		// SECURITY NOTE: Sending the master API key to the client on login is one way to authorize them.
-
-		s.mu.RLock()
-		apiKey := s.Config.AdminAPIKey
-		s.mu.RUnlock()
-
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"success": true, "api_key": "%s"}`, apiKey)
-		return
-	}
-
-	http.Error(w, "Invalid credentials", http.StatusUnauthorized)
-}
-
-func (s *Server) handleCertSync(w http.ResponseWriter, r *http.Request) {
-	s.mu.RLock()
-	node := s.ClusterNode
-	apiKey := s.Config.AdminAPIKey
-	s.mu.RUnlock()
-
-	if node == nil {
-		http.Error(w, "Clustering not enabled", http.StatusServiceUnavailable)
-		return
-	}
-
-	// Authenticate request
-	if r.Header.Get("X-API-Key") != apiKey {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
-	}
-
-	switch r.URL.Path {
-	case cluster.SyncEndpoint:
-		// This is a follower receiving a manifest from the leader.
-		// The handler will internally extract the leader's address from the request.
-		node.HandleSyncRequest(w, r, apiKey, s.Config.HTTPSPort)
-	case cluster.FileEndpoint:
-		// This is the leader serving a file to a follower
-		node.HandleFileRequest(w, r)
-	default:
-		http.NotFound(w, r)
-	}
-}
-
-func (s *Server) RenewLetsEncrypt(domain string) error {
-	s.mu.RLock()
-	m := s.autocertManager
-	s.mu.RUnlock()
-
-	if m == nil {
-		return errors.New("Let's Encrypt is not enabled")
-	}
-
-	s.debugLog("Manual renewal triggered for domain: %s", domain)
-
-	// This is a bit of a hack. Autocert doesn't expose a direct "renew" method.
-	// We can force it by creating a new ClientHello and calling GetCertificate.
-	// This will trigger the renewal logic if the cert is missing or expiring.
-	go func() {
-		hello := &tls.ClientHelloInfo{ServerName: domain}
-		_, err := m.GetCertificate(hello)
-		if err != nil {
-			s.debugLog("Manual renewal for %s failed: %v", domain, err)
-		} else {
-			s.debugLog("Manual renewal for %s completed.", domain)
-		}
-	}()
-
-	return nil
-}
-
 func (s *Server) getConfigForClient(ocspManager *OCSPManager, certMap map[string]*tls.Certificate, defaultTLSCert *tls.Certificate) func(*tls.ClientHelloInfo) (*tls.Config, error) {
 	return func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
-		// If this is an internal cluster request, serve the node's certificate.
-		// We'll identify internal requests by checking for a specific SNI name, e.g., "node.<node-id>".
-		if s.ClusterNode != nil && strings.HasPrefix(hello.ServerName, "node.") {
-			s.debugLog("Serving internal cluster certificate for SNI: %s", hello.ServerName)
-			nodeID := s.ClusterNode.ID
-			nodePaths := tlsutil.GetNodeCertPaths(nodeID)
-			cert, err := tls.LoadX509KeyPair(nodePaths.CertPath, nodePaths.KeyPath)
-			if err != nil {
-				s.debugLog("Failed to load node certificate for internal request: %v", err)
-				// Fallback to public-facing logic
-			} else {
-				// For internal communication, we require client certificates, verified by our CA.
-				caPaths := tlsutil.GetClusterCaPaths()
-				caCertPEM, err := os.ReadFile(caPaths.CertPath)
-				if err != nil {
-					return nil, fmt.Errorf("could not read cluster CA for client auth: %w", err)
-				}
-				clientCAs := x509.NewCertPool()
-				clientCAs.AppendCertsFromPEM(caCertPEM)
-
-				// To solve the "chicken-and-egg" problem of certificate synchronization,
-				// we request a client certificate but do not require it at the TLS layer.
-				// This allows a new node without a trusted cert to connect to the cert
-				// sync endpoints. The application-layer handler (`ServeHTTP`) is then
-				// responsible for enforcing a valid client cert for all other internal APIs.
-				return &tls.Config{
-					Certificates: []tls.Certificate{cert},
-					ClientCAs:    clientCAs,
-					ClientAuth:   tls.VerifyClientCertIfGiven,
-				}, nil
-			}
-		}
-
 		// Public-facing certificate logic
 		domain := strings.ToLower(hello.ServerName)
 		s.debugLog("GetCertificate called for domain: %s", domain)

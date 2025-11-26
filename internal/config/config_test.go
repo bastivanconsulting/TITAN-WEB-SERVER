@@ -35,7 +35,6 @@ func TestEncodeToConf(t *testing.T) {
 func TestRoundTrip(t *testing.T) {
 	original := &Config{
 		HTTPPort: ":9090",
-		AdminUser: "admin",
 		Sites: []Site{
 			{
 				Domain: "test.local",
@@ -66,9 +65,6 @@ func TestRoundTrip(t *testing.T) {
 
 	if decoded.HTTPPort != original.HTTPPort {
 		t.Errorf("HTTPPort mismatch: got %s, want %s", decoded.HTTPPort, original.HTTPPort)
-	}
-	if decoded.AdminUser != original.AdminUser {
-		t.Errorf("AdminUser mismatch: got %s, want %s", decoded.AdminUser, original.AdminUser)
 	}
 	if len(decoded.Sites) != 1 {
 		t.Fatalf("Expected 1 site, got %d", len(decoded.Sites))

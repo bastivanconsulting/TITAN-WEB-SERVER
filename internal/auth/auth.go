@@ -1,27 +1,55 @@
 package auth
 
-// Provider is the interface for authentication
-type Provider interface {
-	// Login checks credentials and returns true if valid
-	Login(username, password string) bool
-}
+import (
+	"encoding/base64"
+	"net/http"
+	"strings"
 
-// SimpleProvider implements Provider using config credentials
-type SimpleProvider struct {
-	ConfigUser string
-	ConfigPass string
-}
+	"github.com/tg123/go-htpasswd"
+)
 
-// NewSimpleProvider creates a new SimpleProvider
-func NewSimpleProvider(user, pass string) *SimpleProvider {
-	return &SimpleProvider{
-		ConfigUser: user,
-		ConfigPass: pass,
-	}
-}
+// BasicAuth wraps a handler with basic HTTP authentication
+func BasicAuth(next http.Handler, realm string, userFile string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		users, err := htpasswd.New(userFile, htpasswd.DefaultSystems, nil)
+		if err != nil {
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
 
-// Login checks credentials
-func (p *SimpleProvider) Login(username, password string) bool {
-	// In production, use constant time comparison
-	return username == p.ConfigUser && password == p.ConfigPass
+		auth := r.Header.Get("Authorization")
+		if auth == "" {
+			w.Header().Set("WWW-Authenticate", `Basic realm="`+realm+`"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		const prefix = "Basic "
+		if !strings.HasPrefix(auth, prefix) {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		decoded, err := base64.StdEncoding.DecodeString(auth[len(prefix):])
+		if err != nil {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		parts := strings.SplitN(string(decoded), ":", 2)
+		if len(parts) != 2 {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		username := parts[0]
+		password := parts[1]
+
+		if !users.Match(username, password) {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }

@@ -11,20 +11,15 @@ import (
 
 // Config represents the global configuration
 type Config struct {
-	HTTPPort       string          `json:"http_port"`        // e.g. ":80"
-	HTTPSPort      string          `json:"https_port"`       // e.g. ":443"
-	MaxThreads     int             `json:"max_threads"`      // Max number of OS threads
-	AdminAPIKey    string          `json:"admin_api_key"`    // API Key for management
-	AdminUser      string          `json:"admin_user"`       // Username for login
-	AdminPass      string          `json:"admin_pass"`       // Password for login (plaintext for MVP)
-	AdminAllowlist []string        `json:"admin_allowlist"`  // IPs allowed to access admin API
-	LogDir         string          `json:"log_dir"`          // Directory for log files (default: /var/log/titan/)
-	ConfDir        string          `json:"conf_dir"`         // Directory for additional site configs (e.g. "conf/sites.d")
-	GeoIPDBPath    string          `json:"geoip_db_path"`    // Path to GeoIP MMDB file
-	Cache          *Cache          `json:"cache"`            // Cache configuration
-	Security       *GlobalSecurity `json:"security"`         // Global security settings
-	Sites          []Site          `json:"sites"`
-	ManualCerts    map[string]*tls.Certificate `json:"-"` // Loaded from /etc/titan/certs/manual
+	HTTPPort    string
+	HTTPSPort   string
+	MaxThreads  int
+	LogDir      string
+	GeoIPDBPath string
+	Cache       *Cache
+	Security    *GlobalSecurity
+	Sites       []Site
+	ManualCerts map[string]*tls.Certificate
 }
 
 // Validate checks the configuration for errors
@@ -54,70 +49,76 @@ func (c *Config) Validate() error {
 
 // GlobalSecurity holds global security settings
 type GlobalSecurity struct {
-	FIPSCompliant bool `json:"fips_compliant"` // Enforce FIPS 140-2/3 compliant TLS settings
+	FIPSCompliant bool
 }
 
 // Cache configuration
 type Cache struct {
-	Type string `json:"type"` // "memory" or "disk"
-	Path string `json:"path"` // Path for disk cache
+	Type string
+	Path string
 }
 
 // Site represents a virtual host
 type Site struct {
-	Domain string      `json:"domain"`
-	Routes []Route     `json:"routes"`
-	SSL    *SSL        `json:"ssl,omitempty"`
-	WAF    *WAFConfig  `json:"waf,omitempty"`
+	Domain   string
+	Routes   []Route
+	SSL      *SSL
+	WAF      *WAFConfig
+	JSModule string
 }
 
 // WAFConfig represents the Web Application Firewall configuration for a site
 type WAFConfig struct {
-	Enabled         bool               `json:"enabled"`
-	UnderAttackMode bool               `json:"under_attack_mode"`
-	RateLimit       int                `json:"rate_limit"`       // Requests per minute per IP
-	AllowList       []string           `json:"allow_list"`       // IP whitelist
-	DenyList        []string           `json:"deny_list"`        // IP blacklist
-	DenyCountries   []string           `json:"deny_countries"`   // Block traffic from these country codes (ISO 3166-1 alpha-2)
-	CheckSQLi       bool               `json:"check_sqli"`
-	CheckXSS        bool               `json:"check_xss"`
-	CheckLFI        bool               `json:"check_lfi"`
-	CheckUA         bool               `json:"check_ua"`
-	JSChallenge     *JSChallengeConfig `json:"js_challenge,omitempty"`
+	Enabled         bool
+	UnderAttackMode bool
+	RateLimit       int
+	AllowList       []string
+	DenyList        []string
+	DenyCountries   []string
+	CheckSQLi       bool
+	CheckXSS        bool
+	CheckLFI        bool
+	CheckUA         bool
+	JSChallenge     *JSChallengeConfig
 }
 
 // JSChallengeConfig represents the JS Challenge configuration
 type JSChallengeConfig struct {
-	Enabled bool `json:"enabled"`
+	Enabled bool
 }
 
 // SSL represents SSL configuration
 type SSL struct {
-	Enabled      bool        `json:"enabled"`
-	Email        string      `json:"email"`         // For ACME registration
-	CertFile     string      `json:"cert_file"`     // Manual cert
-	KeyFile      string      `json:"key_file"`      // Manual key
-	Provider     string      `json:"provider"`      // "letsencrypt", "selfsigned", "manual"
-	HSTS         *HSTSConfig `json:"hsts,omitempty"` // HSTS Configuration
-	OCSPStapling bool        `json:"ocsp_stapling"`  // Enable OCSP Stapling
+	Enabled           bool
+	Email             string
+	Provider          string
+	HSTS              *HSTSConfig
+	OCSPStapling      bool
+	Certificate       string
+	CertificateKey    string
 }
 
 // HSTSConfig represents HTTP Strict Transport Security settings
 type HSTSConfig struct {
-	Enabled           bool `json:"enabled"`
-	MaxAge            int  `json:"max_age"` // Seconds
-	IncludeSubDomains bool `json:"include_subdomains"`
-	Preload           bool `json:"preload"`
+	Enabled           bool
+	MaxAge            int
+	IncludeSubDomains bool
+	Preload           bool
 }
 
 // Route represents a path rule
 type Route struct {
-	Path        string     `json:"path"`                  // e.g., "/" or "/api"
-	Type        string     `json:"type"`                  // "proxy" or "static"
-	ProxyTarget string     `json:"proxy_target,omitempty"`// Single target (legacy/simple)
-	Upstreams   []string   `json:"upstreams,omitempty"`   // Load balancing targets
-	FileRoot    string     `json:"file_root"`             // e.g., "/var/www/html"
-	WAF         *WAFConfig `json:"waf,omitempty"`
+	Path              string
+	Type              string
+	ProxyTarget       string
+	Upstreams         []string
+	FileRoot          string
+	WAF               *WAFConfig
+	JSModule          string
+	AuthBasic         string
+	AuthBasicUserFile string
+	ProxySSLVerify    bool
+	LimitRate         int
 }
 
 // LoadConfig loads configuration from a .conf file and optional include directory
@@ -148,19 +149,29 @@ func LoadConfig(filename string) (*Config, error) {
 		}
 	}
 
-	// Load additional configs if ConfDir is set
-	if cfg.ConfDir != "" {
-		// Look for .conf files
-		matches, err := filepath.Glob(filepath.Join(cfg.ConfDir, "*.conf"))
-		if err == nil {
-			for _, match := range matches {
-				siteCfg, err := loadSiteConfig(match)
-				if err != nil {
-					fmt.Printf("Warning: failed to load config from %s: %v\n", match, err)
-					continue
-				}
-				cfg.Sites = append(cfg.Sites, siteCfg...)
+	// Load additional configs from conf.d
+	matches, err := filepath.Glob("conf.d/*.conf")
+	if err == nil {
+		for _, match := range matches {
+			siteCfg, err := loadSiteConfig(match)
+			if err != nil {
+				fmt.Printf("Warning: failed to load config from %s: %v\n", match, err)
+				continue
 			}
+			cfg.Sites = append(cfg.Sites, siteCfg...)
+		}
+	}
+
+	// Load additional configs from sites-enabled
+	matches, err = filepath.Glob("sites-enabled/*")
+	if err == nil {
+		for _, match := range matches {
+			siteCfg, err := loadSiteConfig(match)
+			if err != nil {
+				fmt.Printf("Warning: failed to load config from %s: %v\n", match, err)
+				continue
+			}
+			cfg.Sites = append(cfg.Sites, siteCfg...)
 		}
 	}
 
