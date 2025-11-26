@@ -110,6 +110,26 @@ func (l *Logger) AccessLog(domain, method, path, remoteAddr string, status int, 
 	w.Write([]byte(line))
 }
 
+// WAFLog writes a WAF event to a dedicated log
+func (l *Logger) WAFLog(domain, remoteAddr, reason, details, country, userAgent string) {
+	if !l.enabled {
+		return
+	}
+
+	// Format: [Time] ClientIP Country UserAgent Reason Details
+	line := fmt.Sprintf("[%s] %s %s \"%s\" %s %s\n",
+		time.Now().Format(time.RFC3339),
+		remoteAddr, country, userAgent, reason, details,
+	)
+
+	w, err := l.getFile(domain, "waf")
+	if err != nil {
+		fmt.Printf("Error writing WAF log for %s: %v\n", domain, err)
+		return
+	}
+	w.Write([]byte(line))
+}
+
 // ErrorLog writes an entry to the error log
 func (l *Logger) ErrorLog(domain, msg string) {
 	if !l.enabled {

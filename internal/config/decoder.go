@@ -37,6 +37,8 @@ func DecodeAST(ast *parser.ConfigAST) (*Config, error) {
 			if len(d.Parameters) > 0 { cfg.LogDir = d.Parameters[0] }
 		case "conf_dir":
 			if len(d.Parameters) > 0 { cfg.ConfDir = d.Parameters[0] }
+		case "geoip_db_path":
+			if len(d.Parameters) > 0 { cfg.GeoIPDBPath = d.Parameters[0] }
 		case "include":
 			// Handle top-level includes if necessary, though usually handled by loader
 		}
@@ -157,6 +159,30 @@ func decodeSiteBlock(b parser.Block) (*Site, error) {
 							site.SSL.HSTS.Preload = d.Parameters[0] == "on"
 						}
 					}
+				}
+			}
+		case "waf":
+			if site.WAF == nil { site.WAF = &WAF{Enabled: true} }
+			for _, d := range subBlock.Directives {
+				switch d.Name {
+				case "enabled":
+					site.WAF.Enabled = d.Parameters[0] == "on"
+				case "under_attack_mode":
+					site.WAF.UnderAttackMode = d.Parameters[0] == "on"
+				case "rate_limit":
+					if len(d.Parameters) > 0 {
+						limit, err := strconv.Atoi(d.Parameters[0])
+						if err != nil {
+							return nil, fmt.Errorf("invalid value for rate_limit: %v", err)
+						}
+						site.WAF.RateLimit = limit
+					}
+				case "allow_list":
+					site.WAF.AllowList = d.Parameters
+				case "deny_list":
+					site.WAF.DenyList = d.Parameters
+				case "deny_countries":
+					site.WAF.DenyCountries = d.Parameters
 				}
 			}
 		}

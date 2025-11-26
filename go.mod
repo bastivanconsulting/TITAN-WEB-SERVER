@@ -7,10 +7,11 @@ toolchain go1.24.3
 require (
 	github.com/hashicorp/raft v1.7.3
 	github.com/hashicorp/raft-boltdb v0.0.0-20251103221153-05f9dd7a5148
-	github.com/msteinert/pam v1.2.0
+	github.com/oschwald/geoip2-golang v1.13.0
 	github.com/quic-go/quic-go v0.57.0
 	github.com/yookoala/gofast v0.8.0
 	golang.org/x/crypto v0.45.0
+	golang.org/x/time v0.12.0
 )
 
 require (
@@ -25,6 +26,7 @@ require (
 	github.com/hashicorp/golang-lru v0.5.0 // indirect
 	github.com/mattn/go-colorable v0.1.12 // indirect
 	github.com/mattn/go-isatty v0.0.14 // indirect
+	github.com/oschwald/maxminddb-golang v1.13.0 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	golang.org/x/net v0.47.0 // indirect
 	golang.org/x/sys v0.38.0 // indirect
