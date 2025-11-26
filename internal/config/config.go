@@ -79,6 +79,10 @@ type WAF struct {
 	AllowList       []string `json:"allow_list"`       // IP whitelist
 	DenyList        []string `json:"deny_list"`        // IP blacklist
 	DenyCountries   []string `json:"deny_countries"`   // Block traffic from these country codes (ISO 3166-1 alpha-2)
+	CheckSQLi       bool     `json:"check_sqli"`
+	CheckXSS        bool     `json:"check_xss"`
+	CheckLFI        bool     `json:"check_lfi"`
+	CheckUA         bool     `json:"check_ua"`
 }
 
 // SSL represents SSL configuration

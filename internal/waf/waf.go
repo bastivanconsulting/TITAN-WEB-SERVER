@@ -119,13 +119,13 @@ func (w *WAF) isMalicious(r *http.Request) (string, string, bool) {
 	// Check query parameters
 	for key, values := range r.URL.Query() {
 		for _, value := range values {
-			if detectSQLi(value) {
+			if w.config.CheckSQLi && detectSQLi(value) {
 				return "SQLI", fmt.Sprintf("Found in query param '%s': %s", key, value), true
 			}
-			if detectXSS(value) {
+			if w.config.CheckXSS && detectXSS(value) {
 				return "XSS", fmt.Sprintf("Found in query param '%s': %s", key, value), true
 			}
-			if detectLFI(value) {
+			if w.config.CheckLFI && detectLFI(value) {
 				return "LFI", fmt.Sprintf("Found in query param '%s': %s", key, value), true
 			}
 		}
@@ -134,20 +134,22 @@ func (w *WAF) isMalicious(r *http.Request) (string, string, bool) {
 	// Check headers (e.g., User-Agent, Referer)
 	for name, values := range r.Header {
 		for _, value := range values {
-			if detectSQLi(value) {
+			if w.config.CheckSQLi && detectSQLi(value) {
 				return "SQLI", fmt.Sprintf("Found in header '%s': %s", name, value), true
 			}
-			if detectXSS(value) {
+			if w.config.CheckXSS && detectXSS(value) {
 				return "XSS", fmt.Sprintf("Found in header '%s': %s", name, value), true
 			}
 		}
 	}
 
 	// Check User-Agent
-	ua := r.UserAgent()
-	for _, pattern := range uaBlacklist {
-		if strings.Contains(strings.ToLower(ua), pattern) {
-			return "BAD_UA", fmt.Sprintf("Blacklisted User-Agent: %s", ua), true
+	if w.config.CheckUA {
+		ua := r.UserAgent()
+		for _, pattern := range uaBlacklist {
+			if strings.Contains(strings.ToLower(ua), pattern) {
+				return "BAD_UA", fmt.Sprintf("Blacklisted User-Agent: %s", ua), true
+			}
 		}
 	}
 
