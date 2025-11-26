@@ -3,6 +3,7 @@ package cluster
 import (
 	"bytes"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,9 +12,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/raft"
+	"titan-web-server/internal/tlsutil"
 )
 
 const (
@@ -58,7 +61,7 @@ func (n *Node) syncCertificates(apiKey string, httpsPort string) error {
 	leaderID := n.Raft.Leader()
 	for _, server := range configFuture.Configuration().Servers {
 		if server.ID != raft.ServerID(leaderID) {
-			go n.sendManifestToFollower(string(server.Address), manifest, apiKey, httpsPort)
+			go n.sendManifestToFollower(string(server.ID), string(server.Address), manifest, apiKey, httpsPort)
 		}
 	}
 
@@ -87,7 +90,7 @@ func (n *Node) buildManifest() ([]FileInfo, error) {
 	return manifest, err
 }
 
-func (n *Node) sendManifestToFollower(addr string, manifest []FileInfo, apiKey string, httpsPort string) {
+func (n *Node) sendManifestToFollower(followerID, addr string, manifest []FileInfo, apiKey string, httpsPort string) {
 	jsonData, err := json.Marshal(manifest)
 	if err != nil {
 		log.Printf("Failed to marshal manifest for %s: %v", addr, err)
@@ -101,8 +104,9 @@ func (n *Node) sendManifestToFollower(addr string, manifest []FileInfo, apiKey s
 		log.Printf("Invalid follower address format '%s': %v", addr, err)
 		return
 	}
-	// Reconstruct with the correct HTTPS port
-	httpsAddr := net.JoinHostPort(host, httpsPort)
+	// Reconstruct with the correct HTTPS port, trimming any leading colon from the port
+	cleanPort := strings.TrimPrefix(httpsPort, ":")
+	httpsAddr := net.JoinHostPort(host, cleanPort)
 
 	url := fmt.Sprintf("https://%s%s", httpsAddr, SyncEndpoint)
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
@@ -113,8 +117,14 @@ func (n *Node) sendManifestToFollower(addr string, manifest []FileInfo, apiKey s
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-API-Key", apiKey)
 
+	tlsConfig, err := createTLSConfig(n.ID, followerID)
+	if err != nil {
+		log.Printf("Failed to create TLS config for %s: %v", addr, err)
+		return
+	}
+
 	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		TLSClientConfig: tlsConfig,
 	}
 	client := &http.Client{Timeout: 5 * time.Second, Transport: tr}
 	resp, err := client.Do(req)
@@ -148,10 +158,11 @@ func (n *Node) HandleSyncRequest(w http.ResponseWriter, r *http.Request, leaderA
 		localFiles[info.Path] = info
 	}
 
+	leaderID := string(n.Raft.Leader())
 	for _, remoteInfo := range remoteManifest {
 		localInfo, exists := localFiles[remoteInfo.Path]
 		if !exists || localInfo.ModTime.Before(remoteInfo.ModTime) || localInfo.Size != remoteInfo.Size {
-			if err := n.downloadFile(leaderAddress, remoteInfo.Path, apiKey, httpsPort); err != nil {
+			if err := n.downloadFile(leaderID, leaderAddress, remoteInfo.Path, apiKey, httpsPort); err != nil {
 				log.Printf("Failed to download %s from leader: %v", remoteInfo.Path, err)
 				// Continue trying to sync other files
 			}
@@ -161,7 +172,7 @@ func (n *Node) HandleSyncRequest(w http.ResponseWriter, r *http.Request, leaderA
 	w.WriteHeader(http.StatusOK)
 }
 
-func (n *Node) downloadFile(leaderAddr, path, apiKey, httpsPort string) error {
+func (n *Node) downloadFile(leaderID, leaderAddr, path, apiKey, httpsPort string) error {
 	// The leader's address from Raft includes the Raft port. We need to replace it
 	// with the HTTPS port for the API call.
 	host, _, err := net.SplitHostPort(leaderAddr)
@@ -172,7 +183,8 @@ func (n *Node) downloadFile(leaderAddr, path, apiKey, httpsPort string) error {
 	}
 
 	// Reconstruct with the correct HTTPS port
-	httpsAddr := net.JoinHostPort(host, httpsPort)
+	cleanPort := strings.TrimPrefix(httpsPort, ":")
+	httpsAddr := net.JoinHostPort(host, cleanPort)
 
 	url := fmt.Sprintf("https://%s%s?file=%s", httpsAddr, FileEndpoint, path)
 	req, err := http.NewRequest("GET", url, nil)
@@ -181,8 +193,13 @@ func (n *Node) downloadFile(leaderAddr, path, apiKey, httpsPort string) error {
 	}
 	req.Header.Set("X-API-Key", apiKey)
 
+	tlsConfig, err := createTLSConfig(n.ID, leaderID)
+	if err != nil {
+		return fmt.Errorf("could not create tls config for download: %w", err)
+	}
+
 	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		TLSClientConfig: tlsConfig,
 	}
 	client := &http.Client{Timeout: 15 * time.Second, Transport: tr}
 	resp, err := client.Do(req)
@@ -229,4 +246,30 @@ func (n *Node) HandleFileRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.ServeFile(w, r, cleanPath)
+}
+
+func createTLSConfig(clientNodeID, targetNodeID string) (*tls.Config, error) {
+	// Load node's keypair
+	nodePaths := tlsutil.GetNodeCertPaths(clientNodeID)
+	cert, err := tls.LoadX509KeyPair(nodePaths.CertPath, nodePaths.KeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("could not load node TLS key pair: %w", err)
+	}
+
+	// Load CA cert
+	caPaths := tlsutil.GetClusterCaPaths()
+	caCertPEM, err := os.ReadFile(caPaths.CertPath)
+	if err != nil {
+		return nil, fmt.Errorf("could not read CA certificate: %w", err)
+	}
+
+	caCertPool := x509.NewCertPool()
+	caCertPool.AppendCertsFromPEM(caCertPEM)
+
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		RootCAs:      caCertPool,
+		MinVersion:   tls.VersionTLS12,
+		ServerName:   "node." + targetNodeID,
+	}, nil
 }

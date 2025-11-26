@@ -2,13 +2,16 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
+	"net"
 	"os"
 	"runtime"
 
 	"titan-web-server/internal/cluster"
 	"titan-web-server/internal/config"
 	"titan-web-server/internal/server"
+	"titan-web-server/internal/tlsutil"
 )
 
 func main() {
@@ -25,6 +28,12 @@ func main() {
 	// Ensure raft dir exists
 	if *nodeID != "" {
 		os.MkdirAll(*raftDir, 0700)
+		if err := ensureClusterCA(); err != nil {
+			log.Fatalf("Failed to ensure cluster CA: %v", err)
+		}
+		if err := ensureNodeCert(*nodeID, *raftAdvertiseAddr); err != nil {
+			log.Fatalf("Failed to ensure node certificate: %v", err)
+		}
 	}
 
 	cfg, err := config.LoadConfig(*configFile)
@@ -99,4 +108,50 @@ func main() {
 	if err := srv.Start(); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
+}
+
+// ensureClusterCA checks for the existence of the cluster CA and generates it if it's missing.
+func ensureClusterCA() error {
+	caPaths := tlsutil.GetClusterCaPaths()
+	if !caPaths.CertsExist() {
+		log.Println("Cluster CA not found. Generating a new one...")
+		return tlsutil.GenerateCA(caPaths)
+	}
+	log.Println("Existing cluster CA found.")
+	return nil
+}
+
+// ensureNodeCert ensures a certificate for the current node exists, signed by the cluster CA.
+func ensureNodeCert(nodeID, advertiseAddr string) error {
+	nodePaths := tlsutil.GetNodeCertPaths(nodeID)
+	if nodePaths.CertsExist() {
+		// TODO: Check if cert is expiring soon and renew? For now, just check existence.
+		log.Printf("Node certificate for %s found.", nodeID)
+		return nil
+	}
+
+	log.Printf("Node certificate for %s not found. Generating a new one...", nodeID)
+
+	// Load CA
+	caPaths := tlsutil.GetClusterCaPaths()
+	caCert, caKey, err := tlsutil.LoadX509KeyPair(caPaths.CertPath, caPaths.KeyPath)
+	if err != nil {
+		return fmt.Errorf("could not load cluster CA to sign node cert: %w", err)
+	}
+
+	// Get IPs for the certificate's SANs
+	host, _, err := net.SplitHostPort(advertiseAddr)
+	if err != nil {
+		// Fallback for addresses without a port
+		host = advertiseAddr
+	}
+
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		log.Printf("Warning: could not resolve advertise address '%s' to IP: %v. Using 127.0.0.1.", host, err)
+		// Add a default IP if lookup fails, common in some container environments
+		ips = []net.IP{net.ParseIP("127.0.0.1")}
+	}
+
+	return tlsutil.GenerateNodeCert(nodePaths, nodeID, ips, caCert, caKey)
 }
