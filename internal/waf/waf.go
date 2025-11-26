@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -153,11 +154,27 @@ func (w *WAF) isMalicious(r *http.Request) (string, string, bool) {
 	return "", "", false
 }
 
-// Very basic SQLi detection patterns
-var sqliPatterns = []string{
-	"' OR '1'='1", "UNION SELECT", "SELECT.*FROM", "UPDATE.*SET", "DELETE.*FROM", "DROP TABLE", "information_schema",
-	"--", ";", "/*", "*/", "@@", "@", "char(", "nchar(", "varchar(", "nvarchar(", "alter", "begin", "cast", "create", "cursor",
-	"declare", "end", "exec", "fetch", "kill", "open", "sysobjects", "syscolumns",
+// Compiled regex for SQLi detection
+var sqliRegexPatterns []*regexp.Regexp
+
+func init() {
+	// More specific SQLi detection patterns using regex with word boundaries
+	patterns := []string{
+		`' OR '1'='1`, `(?i)\bUNION\b.*\bSELECT\b`, `(?i)\bSELECT\b.*\bFROM\b`, `(?i)\bUPDATE\b.*\bSET\b`, `(?i)\bDELETE\b.*\bFROM\b`,
+		`(?i)\bDROP\b\s+\bTABLE\b`, `(?i)information_schema`,
+		`--`, `;`, `/\*`, `\*/`, `@@`, `@`, `(?i)\bchar\b\(`, `(?i)\bnchar\b\(`, `(?i)\bvarchar\b\(`, `(?i)\bnvarchar\b\(`,
+		`(?i)\balter\b`, `(?i)\bbegin\b`, `(?i)\bcast\b`, `(?i)\bcreate\b`, `(?i)\bcursor\b`, `(?i)\bdeclare\b`, `(?i)\bend\b`,
+		`(?i)\bexec\b`, `(?i)\bfetch\b`, `(?i)\bkill\b`, `(?i)\bopen\b`, `(?i)\bsysobjects\b`, `(?i)\bsyscolumns\b`,
+	}
+	for _, p := range patterns {
+		re, err := regexp.Compile(p)
+		if err != nil {
+			// This should not happen with the tested patterns.
+			// If it does, it's a programmer error, so panic is acceptable.
+			panic(fmt.Sprintf("Failed to compile regex '%s': %v", p, err))
+		}
+		sqliRegexPatterns = append(sqliRegexPatterns, re)
+	}
 }
 
 // Very basic XSS detection patterns
@@ -178,8 +195,8 @@ var uaBlacklist = []string{
 }
 
 func detectSQLi(input string) bool {
-	for _, pattern := range sqliPatterns {
-		if strings.Contains(strings.ToLower(input), strings.ToLower(pattern)) {
+	for _, re := range sqliRegexPatterns {
+		if re.MatchString(input) {
 			return true
 		}
 	}
