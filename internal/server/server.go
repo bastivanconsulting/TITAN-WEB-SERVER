@@ -108,9 +108,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := context.WithValue(r.Context(), requestIDKey, requestID)
 	r = r.WithContext(ctx)
 
-	if s.acmeManager != nil && s.acmeManager.HandleChallenge(w, r) {
-		return
-	}
 	// Add global Server header
 	if isContainerized() {
 		w.Header().Set("Server", "Titan Web Container")
@@ -848,6 +845,14 @@ func (s *Server) getConfigForClient(ocspManager *OCSPManager, certMap map[string
 		// Public-facing certificate logic
 		domain := strings.ToLower(hello.ServerName)
 		s.debugLog("GetCertificate called for domain: %s", domain)
+
+		// 0. Check for ACME challenge certificate first
+		if s.acmeManager != nil {
+			if cert, ok := s.acmeManager.GetChallengeCertificate(domain); ok {
+				s.debugLog("Presenting ACME challenge certificate for %s", domain)
+				return &tls.Config{Certificates: []tls.Certificate{*cert}}, nil
+			}
+		}
 
 		// 1. Check Manually loaded certs from /etc/titan/certs/manual
 		s.mu.RLock()
