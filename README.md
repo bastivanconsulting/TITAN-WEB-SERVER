@@ -51,6 +51,13 @@ https_port :8443;
 # Logs
 log_dir "/var/log/titan/";
 
+# Chemin pour les certificats SSL
+# Spécifie le répertoire où les certificats auto-signés et les fichiers ACME
+# (clé de compte, certificats) seront stockés.
+# Assurez-vous que l'utilisateur exécutant Titan a les permissions d'écriture.
+# Défaut : /etc/titan/
+# ssl_path "/var/lib/titan/ssl/";
+
 # Sécurité Globale
 security {
     fips_compliant on;
@@ -101,19 +108,17 @@ Titan peut automatiquement obtenir et renouveler des certificats SSL auprès de 
 
 **Configuration :**
 
-1.  **Activer le module ACME dans `titan-server.conf` :**
+1.  **Configurer le bloc `acme` global dans `titan-server.conf` :**
     ```nginx
     acme {
         enabled on;
-        email "votre-email@example.com";
-        # Optionnel : Spécifier un autre répertoire pour les certificats
-        # cert_path "/etc/titan/certs/custom/";
-        # Optionnel : Utiliser l'environnement de staging de Let's Encrypt pour les tests
-        # directory_url "https://acme-staging-v02.api.letsencrypt.org/directory";
+        email "votre-email@example.com"; # Recommandé
+        # directory_url "https://acme-staging-v02.api.letsencrypt.org/directory"; # Pour les tests
     }
     ```
+    Si aucun email n'est fourni, un email par défaut sera utilisé et un avertissement sera affiché.
 
-2.  **Configurer votre site pour utiliser ACME :**
+2.  **Configurer un site pour utiliser ACME :**
     ```nginx
     server {
         server_name www.example.com;
