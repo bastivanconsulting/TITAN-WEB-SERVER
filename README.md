@@ -75,6 +75,59 @@ server {
 
 Titan prend en charge SSL/TLS via la configuration manuelle des certificats.
 
+### Certificats Manuels
+
+```nginx
+server {
+    server_name www.example.com;
+
+    # SSL est implicitement activé si les directives de certificat sont présentes
+    ssl_certificate /chemin/vers/votre/certificat.pem;
+    ssl_certificate_key /chemin/vers/votre/cle.pem;
+
+    location / {
+        root /var/www/html;
+    }
+}
+```
+
+### Let's Encrypt (ACME)
+
+Titan peut automatiquement obtenir et renouveler des certificats SSL auprès de Let's Encrypt.
+
+**Prérequis :**
+*   Le nom de domaine de votre site doit pointer vers l'adresse IP publique de votre serveur.
+*   Le port 80 doit être accessible publiquement sur votre serveur pour la validation HTTP-01.
+
+**Configuration :**
+
+1.  **Activer le module ACME dans `titan-server.conf` :**
+    ```nginx
+    acme {
+        enabled on;
+        email "votre-email@example.com";
+        # Optionnel : Spécifier un autre répertoire pour les certificats
+        # cert_path "/etc/titan/certs/custom/";
+        # Optionnel : Utiliser l'environnement de staging de Let's Encrypt pour les tests
+        # directory_url "https://acme-staging-v02.api.letsencrypt.org/directory";
+    }
+    ```
+
+2.  **Configurer votre site pour utiliser ACME :**
+    ```nginx
+    server {
+        server_name www.example.com;
+
+        ssl {
+            provider acme;
+        }
+
+        location / {
+            root /var/www/html;
+        }
+    }
+    ```
+
 ### Exemple de configuration SSL
 
 ```nginx
