@@ -28,6 +28,7 @@ import (
 	"titan-web-server/internal/config"
 	"titan-web-server/internal/proxy"
 	"titan-web-server/internal/tlsutil"
+	"titan-web-server/internal/waf"
 )
 
 func (s *Server) debugLog(format string, v ...interface{}) {
@@ -79,6 +80,7 @@ type Server struct {
 	ClusterNode   *cluster.Node // Optional cluster node
 	phpHandlers   map[string]http.Handler
 	proxyHandlers map[string]http.Handler
+	wafInstances  map[string]*waf.WAF
 }
 
 // NewServer creates a new server instance
@@ -127,6 +129,7 @@ func NewServer(cfg *config.Config, configPath string, debug bool) *Server {
 		Debug:         debug,
 		phpHandlers:   make(map[string]http.Handler),
 		proxyHandlers: make(map[string]http.Handler),
+		wafInstances:  make(map[string]*waf.WAF),
 	}
 
 	// Initialize API Handler (srv implements ConfigManager interface implicitly)
@@ -340,7 +343,24 @@ func (s *Server) initHandlersLocked() error {
 	s.phpHandlers = make(map[string]http.Handler)
 	s.proxyHandlers = make(map[string]http.Handler)
 
+	// Clear and close old WAF instances
+	for domain, w := range s.wafInstances {
+		w.Close()
+		delete(s.wafInstances, domain)
+	}
+
 	for _, site := range s.Config.Sites {
+		// Initialize WAF if enabled for the site
+		if site.WAF != nil && site.WAF.Enabled {
+			w, err := waf.New(site.WAF, s.Config.GeoIPDBPath, s.Logger, site.Domain)
+			if err != nil {
+				log.Printf("Error initializing WAF for site %s: %v", site.Domain, err)
+			} else {
+				s.wafInstances[site.Domain] = w
+				log.Printf("WAF enabled for site: %s", site.Domain)
+			}
+		}
+
 		for _, route := range site.Routes {
 			switch route.Type {
 			case "php":
@@ -533,51 +553,66 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// 2. Match Route (Longest prefix match is usually best, but simple first match for now)
-	// We should ideally sort routes by length descending to avoid prefix collisions.
-	var matchedRoute *config.Route
-	for _, route := range matchedSite.Routes {
-		if strings.HasPrefix(r.URL.Path, route.Path) {
-			matchedRoute = &route
-			break
-		}
-	}
+	// Wrap with WAF if enabled for this site
+	s.mu.RLock()
+	siteWAF, wafEnabled := s.wafInstances[matchedSite.Domain]
+	s.mu.RUnlock()
 
-	if matchedRoute == nil {
-		s.renderError(rw, r, 404, "Route non trouvée", "Le chemin demandé n'existe pas.")
-		return
-	}
-
-	// 3. Dispatch
-	switch matchedRoute.Type {
-	case "proxy":
-		proxyHandler := s.getProxyHandler(matchedRoute)
-		if proxyHandler == nil {
-			s.renderError(rw, r, 500, "Erreur Configuration", "Handler proxy non initialisé")
-			if logger != nil {
-				logger.ErrorLog(matchedSite.Domain, "Proxy handler not initialized")
+	// The core routing and dispatching logic is defined as a handler.
+	coreHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 2. Match Route (Longest prefix match is usually best, but simple first match for now)
+		// We should ideally sort routes by length descending to avoid prefix collisions.
+		var matchedRoute *config.Route
+		for _, route := range matchedSite.Routes {
+			if strings.HasPrefix(r.URL.Path, route.Path) {
+				matchedRoute = &route
+				break
 			}
+		}
+
+		if matchedRoute == nil {
+			s.renderError(w, r, 404, "Route non trouvée", "Le chemin demandé n'existe pas.")
 			return
 		}
-		proxyHandler.ServeHTTP(rw, r)
-	case "static":
-		fs := http.FileServer(http.Dir(matchedRoute.FileRoot))
-		// Strip prefix so /static/foo.css looks for foo.css in root
-		http.StripPrefix(matchedRoute.Path, fs).ServeHTTP(rw, r)
-	case "php":
-		handler := s.getPHPHandler(matchedRoute)
-		if handler != nil {
-			handler.ServeHTTP(rw, r)
-		} else {
-			s.renderError(rw, r, 500, "Erreur Configuration", "Handler PHP non initialisé")
-			if logger != nil {
-				logger.ErrorLog(matchedSite.Domain, "PHP handler not initialized")
-			}
-		}
 
-	default:
-		s.renderError(rw, r, 500, "Erreur Configuration", "Type de route invalide.")
+		// 3. Dispatch
+		switch matchedRoute.Type {
+		case "proxy":
+			proxyHandler := s.getProxyHandler(matchedRoute)
+			if proxyHandler == nil {
+				s.renderError(w, r, 500, "Erreur Configuration", "Handler proxy non initialisé")
+				if logger != nil {
+					logger.ErrorLog(matchedSite.Domain, "Proxy handler not initialized")
+				}
+				return
+			}
+			proxyHandler.ServeHTTP(w, r)
+		case "static":
+			fs := http.FileServer(http.Dir(matchedRoute.FileRoot))
+			// Strip prefix so /static/foo.css looks for foo.css in root
+			http.StripPrefix(matchedRoute.Path, fs).ServeHTTP(w, r)
+		case "php":
+			handler := s.getPHPHandler(matchedRoute)
+			if handler != nil {
+				handler.ServeHTTP(w, r)
+			} else {
+				s.renderError(w, r, 500, "Erreur Configuration", "Handler PHP non initialisé")
+				if logger != nil {
+					logger.ErrorLog(matchedSite.Domain, "PHP handler not initialized")
+				}
+			}
+
+		default:
+			s.renderError(w, r, 500, "Erreur Configuration", "Type de route invalide.")
+		}
+	})
+
+	var finalHandler http.Handler = coreHandler
+	if wafEnabled {
+		finalHandler = siteWAF.Middleware(finalHandler)
 	}
+
+	finalHandler.ServeHTTP(rw, r)
 }
 
 // WatchConfig polls the configuration file for changes

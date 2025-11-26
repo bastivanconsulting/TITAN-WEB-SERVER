@@ -20,6 +20,7 @@ type Config struct {
 	AdminAllowlist []string        `json:"admin_allowlist"`  // IPs allowed to access admin API
 	LogDir         string          `json:"log_dir"`          // Directory for log files (default: /var/log/titan/)
 	ConfDir        string          `json:"conf_dir"`         // Directory for additional site configs (e.g. "conf/sites.d")
+	GeoIPDBPath    string          `json:"geoip_db_path"`    // Path to GeoIP MMDB file
 	Cache          *Cache          `json:"cache"`            // Cache configuration
 	Security       *GlobalSecurity `json:"security"`         // Global security settings
 	Sites          []Site          `json:"sites"`
@@ -67,6 +68,17 @@ type Site struct {
 	Domain string  `json:"domain"`
 	Routes []Route `json:"routes"`
 	SSL    *SSL    `json:"ssl,omitempty"`
+	WAF    *WAF    `json:"waf,omitempty"`
+}
+
+// WAF represents the Web Application Firewall configuration for a site
+type WAF struct {
+	Enabled         bool     `json:"enabled"`
+	UnderAttackMode bool     `json:"under_attack_mode"`
+	RateLimit       int      `json:"rate_limit"`       // Requests per minute per IP
+	AllowList       []string `json:"allow_list"`       // IP whitelist
+	DenyList        []string `json:"deny_list"`        // IP blacklist
+	DenyCountries   []string `json:"deny_countries"`   // Block traffic from these country codes (ISO 3166-1 alpha-2)
 }
 
 // SSL represents SSL configuration
