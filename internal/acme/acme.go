@@ -27,8 +27,6 @@ import (
 	"errors"
 )
 
-const DefaultCertPath = "/etc/titan/certs/acme/"
-
 // httpChallengeProvider implements the challenge.Provider interface.
 type httpChallengeProvider struct {
 	mu         sync.Mutex
@@ -104,11 +102,11 @@ func NewManager(cfg *config.Config) (*ACMEManager, error) {
 	}
 
 	if acmeEmail == "" {
-		// No ACME sites configured, so we don't need a manager.
-		return nil, nil
+		acmeEmail = "contact@bastivan.consulting"
+		log.Println("ACME: email not provided, using default contact@bastivan.consulting. Please update your configuration.")
 	}
 
-	keyPath := "/etc/titan/acme_account.key"
+	keyPath := filepath.Join(cfg.SSLPath, "acme_account.key")
 	var privateKey *ecdsa.PrivateKey
 	keyBytes, err := os.ReadFile(keyPath)
 	if os.IsNotExist(err) {
@@ -268,7 +266,7 @@ func (m *ACMEManager) provisionCertificate(domain string) error {
 	}
 
 	// Store the certificate
-	certDir := DefaultCertPath
+	certDir := filepath.Join(m.config.SSLPath, "certs", "acme")
 	if m.config.ACME != nil && m.config.ACME.CertPath != "" {
 		certDir = m.config.ACME.CertPath
 	}
@@ -292,7 +290,7 @@ func (m *ACMEManager) provisionCertificate(domain string) error {
 
 // checkCertificateExpiration checks if a certificate is close to expiring.
 func (m *ACMEManager) checkCertificateExpiration(domain string) (bool, error) {
-	certDir := DefaultCertPath
+	certDir := filepath.Join(m.config.SSLPath, "certs", "acme")
 	if m.config.ACME != nil && m.config.ACME.CertPath != "" {
 		certDir = m.config.ACME.CertPath
 	}

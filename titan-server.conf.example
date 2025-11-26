@@ -9,6 +9,17 @@ http_port :8080;
 # Log directory
 log_dir "/var/log/titan/";
 
+# SSL Path for certificates and ACME account key
+# Ensure the user running titan-server has write permissions to this directory.
+# Default: /etc/titan/
+# ssl_path "/var/lib/titan/ssl/";
+
+# ACME (Let's Encrypt) configuration
+# acme {
+#    enabled on;
+#    email "your-email@example.com";
+# }
+
 # Example http block
 http {
     server {

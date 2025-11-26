@@ -16,6 +16,7 @@ type Config struct {
 	MaxThreads  int
 	LogDir      string
 	GeoIPDBPath string
+	SSLPath     string
 	Cache       *Cache
 	Security    *GlobalSecurity
 	Sites       []Site
