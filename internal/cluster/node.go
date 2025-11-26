@@ -155,11 +155,11 @@ type Node struct {
 	Dir  string
 }
 
-func NewNode(id string, bindAddr string, dataDir string, fsm *FSM, bootstrap bool) (*Node, error) {
+func NewNode(id string, bindAddr, advertiseAddr string, dataDir string, fsm *FSM, bootstrap bool) (*Node, error) {
 	config := raft.DefaultConfig()
 	config.LocalID = raft.ServerID(id)
 
-	addr, err := net.ResolveTCPAddr("tcp", bindAddr)
+	addr, err := net.ResolveTCPAddr("tcp", advertiseAddr)
 	if err != nil {
 		return nil, err
 	}
