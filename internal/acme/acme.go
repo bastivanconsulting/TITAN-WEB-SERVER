@@ -102,8 +102,8 @@ func NewManager(cfg *config.Config) (*ACMEManager, error) {
 	}
 
 	if acmeEmail == "" {
-		// No ACME sites configured, so we don't need a manager.
-		return nil, nil
+		acmeEmail = "contact@bastivan.consulting"
+		log.Println("ACME: email not provided, using default contact@bastivan.consulting. Please update your configuration.")
 	}
 
 	keyPath := filepath.Join(cfg.SSLPath, "acme_account.key")

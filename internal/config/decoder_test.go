@@ -31,3 +31,25 @@ func TestDecodeSSLPath(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, "/etc/titan/", cfg2.SSLPath)
 }
+
+func TestDecodeACMEBlock(t *testing.T) {
+	conf := `
+		acme {
+			enabled on;
+			email "test@example.com";
+			directory_url "https://acme-staging-v02.api.letsencrypt.org/directory";
+			cert_path "/tmp/certs";
+		}
+	`
+	p := parser.NewParser(conf)
+	ast, err := p.Parse()
+	assert.NoError(t, err)
+
+	cfg, err := DecodeAST(ast)
+	assert.NoError(t, err)
+	assert.NotNil(t, cfg.ACME)
+	assert.True(t, cfg.ACME.Enabled)
+	assert.Equal(t, "test@example.com", cfg.ACME.Email)
+	assert.Equal(t, "https://acme-staging-v02.api.letsencrypt.org/directory", cfg.ACME.DirectoryURL)
+	assert.Equal(t, "/tmp/certs", cfg.ACME.CertPath)
+}
