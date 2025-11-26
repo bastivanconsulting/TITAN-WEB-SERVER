@@ -1,4 +1,5 @@
 # TITAN WEB SERVER
+<img width="1024" height="559" alt="image" src="https://github.com/user-attachments/assets/ddc60155-b8b2-4227-8cb2-647effa2071c" />
 
 [![Go CI Status](https://github.com/bastivanconsulting/WebServer/actions/workflows/go.yml/badge.svg?branch=main)](https://github.com/bastivanconsulting/WebServer/actions/workflows/go.yml)
 
