@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"runtime"
@@ -13,7 +14,17 @@ import (
 func main() {
 	configFile := flag.String("config", "titan-server.conf", "Path to configuration file")
 	debug := flag.Bool("debug", false, "Enable debug logging")
+	version := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
+
+	if *version {
+		v, err := os.ReadFile("VERSION")
+		if err != nil {
+			log.Fatalf("Failed to read version file: %v", err)
+		}
+		fmt.Println(string(v))
+		os.Exit(0)
+	}
 
 	if _, err := os.Stat(*configFile); os.IsNotExist(err) {
 		log.Printf("Configuration file not found. Creating a default one at %s", *configFile)
