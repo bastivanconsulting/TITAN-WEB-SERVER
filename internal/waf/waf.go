@@ -1,6 +1,7 @@
 package waf
 
 import (
+	_ "embed"
 	"fmt"
 	"net"
 	"net/http"
@@ -15,6 +16,9 @@ import (
 	"titan-web-server/internal/config"
 )
 
+//go:embed challenge.html
+var challengeHTML []byte
+
 // Logger interface for decoupling
 type Logger interface {
 	WAFLog(domain, remoteAddr, reason, details, country, userAgent string)
@@ -22,11 +26,10 @@ type Logger interface {
 
 // WAF represents the main WAF module
 type WAF struct {
-	config      *config.WAF
+	site        *config.Site
 	geoIPDB     *geoip2.Reader
 	rateLimiter *RateLimiter
 	logger      Logger
-	domain      string
 }
 
 // RateLimiter stores rate limiters for each IP
@@ -43,7 +46,7 @@ type visitor struct {
 }
 
 // New creates a new WAF instance
-func New(cfg *config.WAF, geoIPDBPath string, logger Logger, domain string) (*WAF, error) {
+func New(site *config.Site, geoIPDBPath string, logger Logger) (*WAF, error) {
 	var db *geoip2.Reader
 	var err error
 	if geoIPDBPath != "" {
@@ -53,27 +56,42 @@ func New(cfg *config.WAF, geoIPDBPath string, logger Logger, domain string) (*WA
 		}
 	}
 
-	// Convert rate limit from requests per minute to requests per second
-	limit := rate.Limit(float64(cfg.RateLimit) / 60.0)
-
+	// Rate limiter is now initialized dynamically in the middleware
 	return &WAF{
-		config:      cfg,
-		geoIPDB:     db,
-		rateLimiter: NewRateLimiter(limit, 1),
-		logger:      logger,
-		domain:      domain,
+		site:    site,
+		geoIPDB: db,
+		logger:  logger,
 	}, nil
 }
 
 // Middleware returns the HTTP middleware handler for the WAF
 func (w *WAF) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		// Under Attack Mode
-		if w.config.UnderAttackMode {
-			// For now, just block all requests.
-			// Later, this could be a JS challenge or CAPTCHA.
-			w.logger.WAFLog(w.domain, r.RemoteAddr, "UNDER_ATTACK_MODE", "All requests are temporarily blocked", "", r.UserAgent())
-			http.Error(rw, "Service Unavailable", http.StatusServiceUnavailable)
+		// Determine which WAF config to use: location-specific or site-wide
+		var activeWAFConfig *config.WAFConfig
+		var matchedRoute *config.Route
+
+		// Find the matching route
+		for _, route := range w.site.Routes {
+			// This is a simple prefix match, more complex matching might be needed
+			if strings.HasPrefix(r.URL.Path, route.Path) {
+				matchedRoute = &route
+				break
+			}
+		}
+
+		if matchedRoute != nil && matchedRoute.WAF != nil {
+			activeWAFConfig = matchedRoute.WAF
+		} else if w.site.WAF != nil {
+			activeWAFConfig = w.site.WAF
+		} else {
+			// No WAF configured for this site or location
+			next.ServeHTTP(rw, r)
+			return
+		}
+
+		if !activeWAFConfig.Enabled {
+			next.ServeHTTP(rw, r)
 			return
 		}
 
@@ -82,30 +100,59 @@ func (w *WAF) Middleware(next http.Handler) http.Handler {
 			ip = r.RemoteAddr
 		}
 
-		// 1. IP Whitelist/Blacklist
-		if w.isIPBlocked(ip) {
-			w.logger.WAFLog(w.domain, ip, "IP_BLACKLIST", "Client IP is in deny list", "", r.UserAgent())
+		// Whitelist check must come before anything else
+		if isIPWhitelisted(ip, activeWAFConfig.AllowList) {
+			next.ServeHTTP(rw, r)
+			return
+		}
+
+		// Handle JS Challenge
+		if activeWAFConfig.JSChallenge != nil && activeWAFConfig.JSChallenge.Enabled {
+			if !w.handleJSChallenge(rw, r) {
+				// Challenge is being presented or failed, so stop processing
+				return
+			}
+		}
+
+
+		// Under Attack Mode
+		if activeWAFConfig.UnderAttackMode {
+			w.logger.WAFLog(w.site.Domain, r.RemoteAddr, "UNDER_ATTACK_MODE", "All requests are temporarily blocked", "", r.UserAgent())
+			http.Error(rw, "Service Unavailable", http.StatusServiceUnavailable)
+			return
+		}
+
+		// 1. IP Blacklist
+		if isIPBlacklisted(ip, activeWAFConfig.DenyList) {
+			w.logger.WAFLog(w.site.Domain, ip, "IP_BLACKLIST", "Client IP is in deny list", "", r.UserAgent())
 			http.Error(rw, "Forbidden", http.StatusForbidden)
 			return
 		}
 
 		// 2. Rate Limiting
-		if !w.rateLimiter.Allow(ip) {
-			w.logger.WAFLog(w.domain, ip, "RATE_LIMIT", fmt.Sprintf("Exceeded rate limit of %d/min", w.config.RateLimit), "", r.UserAgent())
-			http.Error(rw, "Too Many Requests", http.StatusTooManyRequests)
-			return
+		if activeWAFConfig.RateLimit > 0 {
+			if w.rateLimiter == nil {
+				// Initialize rate limiter on first use for this WAF instance
+				limit := rate.Limit(float64(activeWAFConfig.RateLimit) / 60.0)
+				w.rateLimiter = NewRateLimiter(limit, 1) // Burst can be configured if needed
+			}
+			if !w.rateLimiter.Allow(ip) {
+				w.logger.WAFLog(w.site.Domain, ip, "RATE_LIMIT", fmt.Sprintf("Exceeded rate limit of %d/min", activeWAFConfig.RateLimit), "", r.UserAgent())
+				http.Error(rw, "Too Many Requests", http.StatusTooManyRequests)
+				return
+			}
 		}
 
 		// 3. GeoIP Blocking
-		if country, blocked := w.isCountryBlocked(ip); blocked {
-			w.logger.WAFLog(w.domain, ip, "GEO_BLOCK", fmt.Sprintf("Country blocked: %s", country), country, r.UserAgent())
+		if country, blocked := w.isCountryBlocked(ip, activeWAFConfig.DenyCountries); blocked {
+			w.logger.WAFLog(w.site.Domain, ip, "GEO_BLOCK", fmt.Sprintf("Country blocked: %s", country), country, r.UserAgent())
 			http.Error(rw, "Forbidden", http.StatusForbidden)
 			return
 		}
 
 		// 4. Basic Threat Detection (SQLi, XSS, LFI)
-		if reason, details, malicious := w.isMalicious(r); malicious {
-			w.logger.WAFLog(w.domain, ip, reason, details, "", r.UserAgent())
+		if reason, details, malicious := w.isMalicious(r, activeWAFConfig); malicious {
+			w.logger.WAFLog(w.site.Domain, ip, reason, details, "", r.UserAgent())
 			http.Error(rw, "Forbidden", http.StatusForbidden)
 			return
 		}
@@ -114,18 +161,37 @@ func (w *WAF) Middleware(next http.Handler) http.Handler {
 	})
 }
 
+func (w *WAF) handleJSChallenge(rw http.ResponseWriter, r *http.Request) bool {
+	cookieName := "__titan_js_validation"
+	expectedCookieValue := "passed" // In a real scenario, this would be dynamic (e.g., JWT, HMAC)
+
+	// 1. Check for a valid cookie
+	cookie, err := r.Cookie(cookieName)
+	if err == nil && cookie.Value == expectedCookieValue {
+		return true // Validation passed
+	}
+
+	// 2. Serve the challenge page
+	rw.Header().Set("Content-Type", "text/html")
+	rw.WriteHeader(http.StatusServiceUnavailable) // 503 is often used for this purpose
+	rw.Write(challengeHTML)
+
+	return false // Indicate that the response has been handled
+}
+
+
 // isMalicious checks for common attack patterns in the query and headers
-func (w *WAF) isMalicious(r *http.Request) (string, string, bool) {
+func (w *WAF) isMalicious(r *http.Request, wafConfig *config.WAFConfig) (string, string, bool) {
 	// Check query parameters
 	for key, values := range r.URL.Query() {
 		for _, value := range values {
-			if w.config.CheckSQLi && detectSQLi(value) {
+			if wafConfig.CheckSQLi && detectSQLi(value) {
 				return "SQLI", fmt.Sprintf("Found in query param '%s': %s", key, value), true
 			}
-			if w.config.CheckXSS && detectXSS(value) {
+			if wafConfig.CheckXSS && detectXSS(value) {
 				return "XSS", fmt.Sprintf("Found in query param '%s': %s", key, value), true
 			}
-			if w.config.CheckLFI && detectLFI(value) {
+			if wafConfig.CheckLFI && detectLFI(value) {
 				return "LFI", fmt.Sprintf("Found in query param '%s': %s", key, value), true
 			}
 		}
@@ -134,17 +200,17 @@ func (w *WAF) isMalicious(r *http.Request) (string, string, bool) {
 	// Check headers (e.g., User-Agent, Referer)
 	for name, values := range r.Header {
 		for _, value := range values {
-			if w.config.CheckSQLi && detectSQLi(value) {
+			if wafConfig.CheckSQLi && detectSQLi(value) {
 				return "SQLI", fmt.Sprintf("Found in header '%s': %s", name, value), true
 			}
-			if w.config.CheckXSS && detectXSS(value) {
+			if wafConfig.CheckXSS && detectXSS(value) {
 				return "XSS", fmt.Sprintf("Found in header '%s': %s", name, value), true
 			}
 		}
 	}
 
 	// Check User-Agent
-	if w.config.CheckUA {
+	if wafConfig.CheckUA {
 		ua := r.UserAgent()
 		for _, pattern := range uaBlacklist {
 			if strings.Contains(strings.ToLower(ua), pattern) {
@@ -223,15 +289,17 @@ func detectLFI(input string) bool {
 	return false
 }
 
-func (w *WAF) isIPBlocked(ip string) bool {
-	// Whitelist takes precedence
-	for _, allowedIP := range w.config.AllowList {
+func isIPWhitelisted(ip string, allowList []string) bool {
+	for _, allowedIP := range allowList {
 		if allowedIP == ip {
-			return false
+			return true
 		}
 	}
-	// Check blacklist
-	for _, deniedIP := range w.config.DenyList {
+	return false
+}
+
+func isIPBlacklisted(ip string, denyList []string) bool {
+	for _, deniedIP := range denyList {
 		if deniedIP == ip {
 			return true
 		}
@@ -239,8 +307,8 @@ func (w *WAF) isIPBlocked(ip string) bool {
 	return false
 }
 
-func (w *WAF) isCountryBlocked(ipStr string) (string, bool) {
-	if w.geoIPDB == nil || len(w.config.DenyCountries) == 0 {
+func (w *WAF) isCountryBlocked(ipStr string, denyCountries []string) (string, bool) {
+	if w.geoIPDB == nil || len(denyCountries) == 0 {
 		return "", false
 	}
 
@@ -254,7 +322,7 @@ func (w *WAF) isCountryBlocked(ipStr string) (string, bool) {
 		return "", false // Fail open
 	}
 
-	for _, country := range w.config.DenyCountries {
+	for _, country := range denyCountries {
 		if strings.EqualFold(record.Country.IsoCode, country) {
 			return record.Country.IsoCode, true
 		}

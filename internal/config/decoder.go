@@ -123,6 +123,19 @@ func decodeSiteBlock(b parser.Block) (*Site, error) {
 					route.Upstreams = d.Parameters
 				}
 			}
+
+			// Handle location-specific blocks
+			for _, locBlock := range subBlock.Blocks {
+				switch locBlock.Name {
+				case "waf":
+					wafConfig, err := decodeWAFBlock(locBlock)
+					if err != nil {
+						return nil, fmt.Errorf("in location %s: %v", route.Path, err)
+					}
+					route.WAF = wafConfig
+				}
+			}
+
 			site.Routes = append(site.Routes, route)
 
 		case "ssl":
@@ -162,46 +175,69 @@ func decodeSiteBlock(b parser.Block) (*Site, error) {
 				}
 			}
 		case "waf":
-			if site.WAF == nil {
-				site.WAF = &WAF{
-					Enabled:   true,
-					CheckSQLi: true,
-					CheckXSS:  true,
-					CheckLFI:  true,
-					CheckUA:   true,
-				}
+			wafConfig, err := decodeWAFBlock(subBlock)
+			if err != nil {
+				return nil, err
 			}
+			site.WAF = wafConfig
+		}
+	}
+	return site, nil
+}
+
+// decodeWAFBlock parses a WAF block from the AST.
+func decodeWAFBlock(b parser.Block) (*WAFConfig, error) {
+	waf := &WAFConfig{
+		Enabled:   true,
+		CheckSQLi: true,
+		CheckXSS:  true,
+		CheckLFI:  true,
+		CheckUA:   true,
+	}
+
+	for _, d := range b.Directives {
+		switch d.Name {
+		case "enabled":
+			waf.Enabled = d.Parameters[0] == "on"
+		case "under_attack_mode":
+			waf.UnderAttackMode = d.Parameters[0] == "on"
+		case "rate_limit":
+			if len(d.Parameters) > 0 {
+				limit, err := strconv.Atoi(d.Parameters[0])
+				if err != nil {
+					return nil, fmt.Errorf("invalid value for rate_limit: %v", err)
+				}
+				waf.RateLimit = limit
+			}
+		case "allow_list":
+			waf.AllowList = d.Parameters
+		case "deny_list":
+			waf.DenyList = d.Parameters
+		case "deny_countries":
+			waf.DenyCountries = d.Parameters
+		case "check_sqli":
+			waf.CheckSQLi = d.Parameters[0] == "on"
+		case "check_xss":
+			waf.CheckXSS = d.Parameters[0] == "on"
+		case "check_lfi":
+			waf.CheckLFI = d.Parameters[0] == "on"
+		case "check_ua":
+			waf.CheckUA = d.Parameters[0] == "on"
+		}
+	}
+
+	for _, subBlock := range b.Blocks {
+		switch subBlock.Name {
+		case "js_challenge":
+			waf.JSChallenge = &JSChallengeConfig{}
+			// Loop through js_challenge directives if any, e.g., "enabled"
 			for _, d := range subBlock.Directives {
-				switch d.Name {
-				case "enabled":
-					site.WAF.Enabled = d.Parameters[0] == "on"
-				case "under_attack_mode":
-					site.WAF.UnderAttackMode = d.Parameters[0] == "on"
-				case "rate_limit":
-					if len(d.Parameters) > 0 {
-						limit, err := strconv.Atoi(d.Parameters[0])
-						if err != nil {
-							return nil, fmt.Errorf("invalid value for rate_limit: %v", err)
-						}
-						site.WAF.RateLimit = limit
-					}
-				case "allow_list":
-					site.WAF.AllowList = d.Parameters
-				case "deny_list":
-					site.WAF.DenyList = d.Parameters
-				case "deny_countries":
-					site.WAF.DenyCountries = d.Parameters
-				case "check_sqli":
-					site.WAF.CheckSQLi = d.Parameters[0] == "on"
-				case "check_xss":
-					site.WAF.CheckXSS = d.Parameters[0] == "on"
-				case "check_lfi":
-					site.WAF.CheckLFI = d.Parameters[0] == "on"
-				case "check_ua":
-					site.WAF.CheckUA = d.Parameters[0] == "on"
+				if d.Name == "enabled" {
+					waf.JSChallenge.Enabled = d.Parameters[0] == "on"
 				}
 			}
 		}
 	}
-	return site, nil
+
+	return waf, nil
 }

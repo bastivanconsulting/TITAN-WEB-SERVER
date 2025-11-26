@@ -350,15 +350,27 @@ func (s *Server) initHandlersLocked() error {
 		delete(s.wafInstances, domain)
 	}
 
-	for _, site := range s.Config.Sites {
-		// Initialize WAF if enabled for the site
-		if site.WAF != nil && site.WAF.Enabled {
-			w, err := waf.New(site.WAF, s.Config.GeoIPDBPath, s.Logger, site.Domain)
+	for i := range s.Config.Sites {
+		site := &s.Config.Sites[i]
+		// Determine if a WAF instance is needed for this site.
+		// It's needed if the site itself has a WAF block, or any of its locations do.
+		needsWAF := site.WAF != nil
+		if !needsWAF {
+			for _, route := range site.Routes {
+				if route.WAF != nil {
+					needsWAF = true
+					break
+				}
+			}
+		}
+
+		if needsWAF {
+			w, err := waf.New(site, s.Config.GeoIPDBPath, s.Logger)
 			if err != nil {
 				log.Printf("Error initializing WAF for site %s: %v", site.Domain, err)
 			} else {
 				s.wafInstances[site.Domain] = w
-				log.Printf("WAF enabled for site: %s", site.Domain)
+				log.Printf("WAF handler initialized for site: %s", site.Domain)
 			}
 		}
 
