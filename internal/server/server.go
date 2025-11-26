@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"crypto/tls"
+	"crypto/x509"
 	"embed"
 	"errors"
 	"fmt"
@@ -848,55 +849,7 @@ func (s *Server) Start() error {
 				tlsConfig = &tls.Config{}
 			}
 
-			tlsConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-				domain := strings.ToLower(hello.ServerName)
-				s.debugLog("GetCertificate called for domain: %s", domain)
-
-				// 1. Check Manually loaded certs from /etc/titan/certs/manual
-				s.mu.RLock()
-				manualCert, ok := s.Config.ManualCerts[domain]
-				s.mu.RUnlock()
-				if ok {
-					s.debugLog("Found manual certificate for %s in /etc/titan/certs/manual/", domain)
-					return manualCert, nil
-				}
-
-				// 2. Check Manual Certs from config file
-				if cert, ok := certMap[domain]; ok {
-					s.debugLog("Found manual certificate for %s in config file", domain)
-					// Apply OCSP Staple if available
-					if staple := ocspManager.GetStaple(domain); staple != nil {
-						s.debugLog("Applying OCSP staple for %s", domain)
-						// Return a shallow copy with the staple
-						certWithStaple := *cert
-						certWithStaple.OCSPStaple = staple
-						return &certWithStaple, nil
-					}
-					return cert, nil
-				}
-
-				// 3. Check ACME
-				if m != nil {
-					s.debugLog("Attempting to get certificate for %s from ACME/autocert", domain)
-					cert, err := m.GetCertificate(hello)
-					if err != nil {
-						s.debugLog("autocert.GetCertificate for %s returned error: %v", domain, err)
-						// Fall through to default cert
-					} else {
-						s.debugLog("Successfully obtained certificate for %s from ACME/autocert", domain)
-						return cert, nil
-					}
-				}
-
-				// 4. Fallback to Default Self-Signed Cert
-				if defaultTLSCert != nil {
-					s.debugLog("No specific certificate found for %s. Falling back to default self-signed cert.", domain)
-					return defaultTLSCert, nil
-				}
-
-				s.debugLog("No certificate found for domain %s and no default certificate available.", domain)
-				return nil, errors.New("certificate not found for domain")
-			}
+			tlsConfig.GetConfigForClient = s.getConfigForClient(ocspManager, certMap, defaultTLSCert)
 			tlsConfig.NextProtos = []string{"h3", "http/1.1"} // Advertise HTTP/3 support
 
 			// Start HTTP/3 (QUIC) Server
@@ -1105,4 +1058,81 @@ func (s *Server) RenewLetsEncrypt(domain string) error {
 	}()
 
 	return nil
+}
+
+func (s *Server) getConfigForClient(ocspManager *OCSPManager, certMap map[string]*tls.Certificate, defaultTLSCert *tls.Certificate) func(*tls.ClientHelloInfo) (*tls.Config, error) {
+	return func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+		// If this is an internal cluster request, serve the node's certificate.
+		// We'll identify internal requests by checking for a specific SNI name, e.g., "node.<node-id>".
+		if s.ClusterNode != nil && strings.HasPrefix(hello.ServerName, "node.") {
+			s.debugLog("Serving internal cluster certificate for SNI: %s", hello.ServerName)
+			nodeID := s.ClusterNode.ID
+			nodePaths := tlsutil.GetNodeCertPaths(nodeID)
+			cert, err := tls.LoadX509KeyPair(nodePaths.CertPath, nodePaths.KeyPath)
+			if err != nil {
+				s.debugLog("Failed to load node certificate for internal request: %v", err)
+				// Fallback to public-facing logic
+			} else {
+				// For internal communication, we require client certificates, verified by our CA.
+				caPaths := tlsutil.GetClusterCaPaths()
+				caCertPEM, err := os.ReadFile(caPaths.CertPath)
+				if err != nil {
+					return nil, fmt.Errorf("could not read cluster CA for client auth: %w", err)
+				}
+				clientCAs := x509.NewCertPool()
+				clientCAs.AppendCertsFromPEM(caCertPEM)
+
+				return &tls.Config{
+					Certificates: []tls.Certificate{cert},
+					ClientCAs:    clientCAs,
+					ClientAuth:   tls.RequireAndVerifyClientCert,
+				}, nil
+			}
+		}
+
+		// Public-facing certificate logic
+		domain := strings.ToLower(hello.ServerName)
+		s.debugLog("GetCertificate called for domain: %s", domain)
+
+		// 1. Check Manually loaded certs from /etc/titan/certs/manual
+		s.mu.RLock()
+		manualCert, ok := s.Config.ManualCerts[domain]
+		s.mu.RUnlock()
+		if ok {
+			s.debugLog("Found manual certificate for %s in /etc/titan/certs/manual/", domain)
+			return &tls.Config{Certificates: []tls.Certificate{*manualCert}}, nil
+		}
+
+		// 2. Check Manual Certs from config file
+		if cert, ok := certMap[domain]; ok {
+			s.debugLog("Found manual certificate for %s in config file", domain)
+			if staple := ocspManager.GetStaple(domain); staple != nil {
+				s.debugLog("Applying OCSP staple for %s", domain)
+				certWithStaple := *cert
+				certWithStaple.OCSPStaple = staple
+				return &tls.Config{Certificates: []tls.Certificate{certWithStaple}}, nil
+			}
+			return &tls.Config{Certificates: []tls.Certificate{*cert}}, nil
+		}
+
+		// 3. Check ACME
+		if s.autocertManager != nil {
+			cert, err := s.autocertManager.GetCertificate(hello)
+			if err != nil {
+				s.debugLog("autocert.GetCertificate for %s returned error: %v, falling through", domain, err)
+			} else {
+				s.debugLog("Successfully obtained certificate for %s from ACME/autocert", domain)
+				return &tls.Config{Certificates: []tls.Certificate{*cert}}, nil
+			}
+		}
+
+		// 4. Fallback to Default Self-Signed Cert
+		if defaultTLSCert != nil {
+			s.debugLog("No specific certificate found for %s. Falling back to default self-signed cert.", domain)
+			return &tls.Config{Certificates: []tls.Certificate{*defaultTLSCert}}, nil
+		}
+
+		s.debugLog("No certificate found for domain %s and no default certificate available.", domain)
+		return nil, errors.New("certificate not found for domain")
+	}
 }
