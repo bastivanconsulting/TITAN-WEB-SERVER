@@ -80,7 +80,7 @@ func main() {
 		srv.ClusterNode = node
 
 		// Start certificate synchronization
-		node.StartCertSync(cfg.AdminAPIKey)
+		node.StartCertSync(cfg.AdminAPIKey, cfg.HTTPSPort)
 
 		if *joinAddr != "" {
 			// TODO: We need a way to tell the other node to add us.
