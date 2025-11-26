@@ -230,10 +230,12 @@ func (n *Node) Join(nodeID, addr string) error {
 	}
 
 	for _, srv := range configFuture.Configuration().Servers {
-		if srv.ID == raft.ServerID(nodeID) || srv.Address == raft.ServerAddress(addr) {
-			if srv.Address == raft.ServerAddress(addr) && srv.ID == raft.ServerID(nodeID) {
-				return nil // already joined
+		if srv.ID == raft.ServerID(nodeID) {
+			if srv.Address == raft.ServerAddress(addr) {
+				// Node is already in the cluster with the correct address.
+				return nil
 			}
+			// Node is in the cluster but with a different address. Remove it first.
 			future := n.Raft.RemoveServer(srv.ID, 0, 0)
 			if err := future.Error(); err != nil {
 				return err
