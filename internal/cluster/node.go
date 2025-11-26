@@ -159,12 +159,12 @@ func NewNode(id string, bindAddr, advertiseAddr string, dataDir string, fsm *FSM
 	config := raft.DefaultConfig()
 	config.LocalID = raft.ServerID(id)
 
-	addr, err := net.ResolveTCPAddr("tcp", advertiseAddr)
+	advertise, err := net.ResolveTCPAddr("tcp", advertiseAddr)
 	if err != nil {
 		return nil, err
 	}
 
-	transport, err := raft.NewTCPTransport(bindAddr, addr, 3, 10*time.Second, os.Stderr)
+	transport, err := raft.NewTCPTransport(bindAddr, advertise, 3, 10*time.Second, os.Stderr)
 	if err != nil {
 		return nil, err
 	}

@@ -152,30 +152,84 @@ L'interface supporte deux modes d'authentification (configurés via `admin_user`
 
 ## 🌐 Mode Cluster (Distribué)
 
-Titan Server intègre un moteur de consensus **Raft** pour la synchronisation automatique des configurations entre plusieurs nœuds.
+Titan Server intègre un moteur de consensus **Raft** pour la synchronisation automatique des configurations et des certificats SSL entre plusieurs nœuds.
 
-### Démarrer le Premier Nœud (Leader/Bootstrap)
+### Concepts Clés
+
+-   **Nœud** : Une instance de Titan Server.
+-   **Cluster** : Un groupe de nœuds travaillant ensemble.
+-   **Leader** : Un nœud élu qui est responsable de la gestion du cluster.
+-   **Follower** : Un nœud qui réplique les données du leader.
+-   **Consensus (Raft)** : L'algorithme qui garantit que tous les nœuds s'accordent sur l'état de la configuration.
+
+### Flags de Lancement pour le Clustering
+
+-   `-node-id <id>` : Un nom unique pour le nœud dans le cluster (ex: `node1`, `server-a`).
+-   `-bootstrap` : À utiliser **uniquement** sur le tout premier nœud du cluster. Il s'initialise en tant que leader.
+-   `-raft-addr <ip:port>` : L'adresse IP et le port sur lesquels le nœud écoutera pour la communication du cluster (ex: `0.0.0.0:9001`).
+-   `-raft-advertise-addr <ip:port>` : L'adresse IP et le port **publics** que ce nœud partagera avec les autres. Essentiel si le serveur est derrière un NAT ou si vous utilisez `0.0.0.0` pour `-raft-addr`. Si non spécifié, utilise la valeur de `-raft-addr`.
+-   `-join <ip:port>` : L'adresse de l'API d'un nœud déjà présent dans le cluster pour le rejoindre.
+
+### Exemple : Lancement d'un Cluster à 3 Nœuds
+
+Voici comment démarrer un cluster sur trois machines différentes.
+
+**Machine 1 (IP: 10.0.0.1) - Le premier nœud (Leader)**
+
 ```bash
 ./titan-web-server \
   -config titan-server.conf \
-  -node-id node1 \
-  -raft-addr 127.0.0.1:9000 \
-  -raft-dir ./data/node1 \
+  -node-id "node-1" \
+  -raft-addr "0.0.0.0:9001" \
+  -raft-advertise-addr "10.0.0.1:9001" \
+  -raft-dir "/etc/titan/raft" \
   -bootstrap
 ```
+-   `-bootstrap` : Ce nœud est le premier et s'auto-désigne comme leader.
+-   `-raft-addr "0.0.0.0:9001"` : Le serveur écoute sur toutes les interfaces réseau sur le port 9001.
+-   `-raft-advertise-addr "10.0.0.1:9001"` : Il dit aux autres nœuds de le contacter à l'adresse `10.0.0.1:9001`.
 
-### Ajouter des Nœuds (Workers)
-1.  Démarrer le nœud (sans bootstrap) :
+**Machine 2 (IP: 10.0.0.2) - Le deuxième nœud (Follower)**
+
+```bash
+./titan-web-server \
+  -config titan-server.conf \
+  -node-id "node-2" \
+  -raft-addr "0.0.0.0:9001" \
+  -raft-advertise-addr "10.0.0.2:9001" \
+  -raft-dir "/etc/titan/raft"
+```
+*Note : Pas de `-bootstrap` ici. Ce nœud attend de rejoindre un cluster.*
+
+Maintenant, depuis la **Machine 2**, ou via l'interface d'administration du **Leader**, ajoutez ce nouveau nœud au cluster :
+```bash
+curl -X POST http://10.0.0.1:8080/api/cluster/join \
+     -H "X-API-Key: votre-clé-secrète" \
+     -d '{"id": "node-2", "addr": "10.0.0.2:9001"}'
+```
+
+**Machine 3 (IP: 10.0.0.3) - Le troisième nœud (Follower)**
+
+Même processus que pour la Machine 2.
+
+1.  Démarrez le serveur :
     ```bash
-    ./titan-web-server -config titan-server.conf -node-id node2 -raft-addr 127.0.0.1:9001 -raft-dir ./data/node2
+    ./titan-web-server \
+      -config titan-server.conf \
+      -node-id "node-3" \
+      -raft-addr "0.0.0.0:9001" \
+      -raft-advertise-addr "10.0.0.3:9001" \
+      -raft-dir "/etc/titan/raft"
     ```
-2.  **Via l'Interface Admin** : Allez dans l'onglet "Cluster" et entrez l'ID et l'adresse du nouveau nœud.
-3.  **Ou via API** :
+
+2.  Ajoutez-le au cluster via l'API du leader :
     ```bash
-    curl -X POST http://127.0.0.1:8080/api/cluster/join \
+    curl -X POST http://10.0.0.1:8080/api/cluster/join \
          -H "X-API-Key: votre-clé-secrète" \
-         -d '{"id": "node2", "addr": "127.0.0.1:9001"}'
+         -d '{"id": "node-3", "addr": "10.0.0.3:9001"}'
     ```
+
+Une fois les nœuds joints, toute modification de configuration effectuée sur le leader (via l'API ou l'interface d'administration) sera automatiquement répliquée sur tous les followers.
 
 ---
 
