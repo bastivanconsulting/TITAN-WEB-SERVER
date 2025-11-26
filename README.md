@@ -99,25 +99,21 @@ http {
         server_name my-php-app.local;
 
         location / {
-            # Type de handler
-            type php;
-
             # Chemin racine des fichiers (Document Root)
-            file_root "/var/www/my-php-app/public";
+            root "/var/www/my-php-app/public";
 
             # Adresse du processus PHP-FPM
             # Peut être une adresse TCP ou un socket Unix
-            proxy_target "127.0.0.1:9000";
-            # proxy_target "unix:/var/run/php/php8.1-fpm.sock";
+            fastcgi_pass "127.0.0.1:9000";
+            # fastcgi_pass "unix:/var/run/php/php8.1-fpm.sock";
         }
     }
 }
 ```
 
 **Directives importantes pour PHP :**
-*   `type php;` : Indique à Titan de traiter les requêtes avec le handler PHP.
-*   `file_root "/path/to/your/app";` : Définit le `DOCUMENT_ROOT` de votre application. Titan cherchera `index.php` dans ce répertoire pour les requêtes de type `/`.
-*   `proxy_target "address";` : Spécifie comment se connecter à PHP-FPM. C'est l'équivalent de `fastcgi_pass` dans Nginx.
+*   `root "/path/to/your/app";` : Définit le `DOCUMENT_ROOT` de votre application. Titan cherchera `index.php` dans ce répertoire pour les requêtes de type `/`.
+*   `fastcgi_pass "address";` : Spécifie comment se connecter à PHP-FPM. C'est l'équivalent de `fastcgi_pass` dans Nginx.
 
 ---
 
@@ -256,7 +252,14 @@ server {
         rate_limit 100; # Req/min par IP
         deny_countries CN RU IR;
         deny_list 1.2.3.4 5.6.7.8;
+        allow_list 127.0.0.1;
         under_attack_mode off;
+
+        # Activer les protections spécifiques
+        check_sqli on;
+        check_xss on;
+        check_lfi on;
+        check_ua on;
     }
 }
 ```
@@ -268,6 +271,10 @@ server {
 *   `deny_list [ip1] [ip2] ...;` : Liste noire d'IPs à bloquer.
 *   `deny_countries [code1] [code2] ...;` : Bloque le trafic provenant des pays spécifiés (codes ISO 3166-1 alpha-2).
 *   `under_attack_mode [on|off];` : Active un mode de sécurité élevé qui bloque temporairement tout le trafic.
+*   `check_sqli [on|off];` : Active la protection contre les injections SQL.
+*   `check_xss [on|off];` : Active la protection contre le Cross-Site Scripting.
+*   `check_lfi [on|off];` : Active la protection contre l'inclusion de fichiers locaux.
+*   `check_ua [on|off];` : Active le blocage des User-Agents malveillants.
 
 **Configuration Globale Requise pour GeoIP :**
 Pour utiliser `deny_countries`, vous devez spécifier le chemin vers une base de données GeoIP (format MMDB) dans votre configuration globale :
@@ -277,6 +284,25 @@ geoip_db_path "/path/to/GeoLite2-Country.mmdb";
 
 **Journalisation (Logging) :**
 Les requêtes bloquées par le WAF sont enregistrées dans un fichier de log dédié : `/var/log/titan/votredomaine-waf.log`.
+
+---
+
+## 🤝 Contribuer
+
+Les contributions sont les bienvenues ! Voici comment vous pouvez aider :
+
+### Lancer les tests
+Pour vous assurer que vos changements n'ont pas introduit de régressions, lancez la suite de tests complète :
+```bash
+go test ./...
+```
+
+### Proposer des changements
+1.  Forkez le dépôt.
+2.  Créez une nouvelle branche pour votre fonctionnalité (`git checkout -b ma-nouvelle-feature`).
+3.  Faites vos changements et commitez-les (`git commit -am 'Ajout de ma feature'`).
+4.  Poussez votre branche (`git push origin ma-nouvelle-feature`).
+5.  Ouvrez une Pull Request.
 
 ---
 
