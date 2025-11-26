@@ -184,6 +184,71 @@ Limite la vitesse de téléchargement pour une `location`.
 
 ---
 
+## ⚖️ Load Balancing
+
+Titan supporte le load balancing pour les routes `proxy`.
+
+### Algorithmes
+
+*   `round_robin` (défaut) : Distribue les requêtes de manière circulaire.
+*   `least_conn` : Envoie les nouvelles requêtes au serveur avec le moins de connexions actives.
+*   `ip_hash` : Assure que les requêtes d'une même adresse IP client sont dirigées vers le même serveur.
+
+### Health Checks
+
+*   `web` : Effectue une requête HTTP GET sur une URL spécifiée.
+*   `tcp` : Tente d'établir une connexion TCP avec le serveur.
+
+### Exemple de configuration
+
+```nginx
+location /api/ {
+    upstreams http://backend1:8080 http://backend2:8080;
+
+    load_balancer {
+        algorithm least_conn;
+        health_check {
+            type web;
+            path "/health";
+            interval 5s;
+            timeout 2s;
+        }
+    }
+}
+```
+
+---
+
+## 🚀 Déploiement
+
+Déployez Titan Web Server en utilisant Docker ou Kubernetes.
+
+### Docker
+
+1.  **Construire l'image Docker** :
+    ```bash
+    docker build -t titan-web-server:latest .
+    ```
+
+2.  **Exécuter le conteneur** :
+    ```bash
+    docker run -p 8080:8080 titan-web-server:latest
+    ```
+
+### Kubernetes / K3s
+
+1.  **Appliquer les manifestes** :
+    ```bash
+    kubectl apply -f k8s/
+    ```
+
+2.  **Vérifier le déploiement** :
+    ```bash
+    kubectl get all
+    ```
+
+---
+
 ## 🤝 Contribuer
 
 Les contributions sont les bienvenues !

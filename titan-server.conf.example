@@ -1,0 +1,37 @@
+# Titan Web Server - Example Configuration
+
+# HTTP port to listen on
+http_port :8080;
+
+# HTTPS port to listen on
+# https_port :8443;
+
+# Log directory
+log_dir "/var/log/titan/";
+
+# Example http block
+http {
+    server {
+        server_name localhost;
+
+        location / {
+            root "/var/www/html";
+        }
+
+        location /api/ {
+            # Define the upstreams
+            upstreams http://127.0.0.1:8081 http://127.0.0.1:8082;
+
+            # Configure the load balancer
+            load_balancer {
+                algorithm least_conn;
+                health_check {
+                    type web;
+                    path "/health";
+                    interval 5s;
+                    timeout 2s;
+                }
+            }
+        }
+    }
+}

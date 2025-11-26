@@ -150,6 +150,12 @@ func decodeSiteBlock(b parser.Block) (*Site, error) {
 						return nil, fmt.Errorf("in location %s: %v", route.Path, err)
 					}
 					route.WAF = wafConfig
+				case "load_balancer":
+					lb, err := decodeLoadBalancer(locBlock)
+					if err != nil {
+						return nil, fmt.Errorf("in location %s: %v", route.Path, err)
+					}
+					route.LoadBalancer = lb
 				}
 			}
 
@@ -263,4 +269,50 @@ func decodeWAFBlock(b parser.Block) (*WAFConfig, error) {
 	}
 
 	return waf, nil
+}
+
+func decodeLoadBalancer(b parser.Block) (*LoadBalancer, error) {
+	lb := &LoadBalancer{}
+	for _, d := range b.Directives {
+		if d.Name == "algorithm" {
+			if len(d.Parameters) > 0 {
+				lb.Algorithm = d.Parameters[0]
+			}
+		}
+	}
+	for _, subBlock := range b.Blocks {
+		if subBlock.Name == "health_check" {
+			hc, err := decodeHealthCheck(subBlock)
+			if err != nil {
+				return nil, err
+			}
+			lb.HealthCheck = hc
+		}
+	}
+	return lb, nil
+}
+
+func decodeHealthCheck(b parser.Block) (*HealthCheck, error) {
+	hc := &HealthCheck{}
+	for _, d := range b.Directives {
+		switch d.Name {
+		case "type":
+			if len(d.Parameters) > 0 {
+				hc.Type = d.Parameters[0]
+			}
+		case "interval":
+			if len(d.Parameters) > 0 {
+				hc.Interval = d.Parameters[0]
+			}
+		case "timeout":
+			if len(d.Parameters) > 0 {
+				hc.Timeout = d.Parameters[0]
+			}
+		case "path":
+			if len(d.Parameters) > 0 {
+				hc.Path = d.Parameters[0]
+			}
+		}
+	}
+	return hc, nil
 }

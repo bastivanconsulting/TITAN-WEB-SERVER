@@ -110,6 +110,20 @@ type HSTSConfig struct {
 	Preload           bool
 }
 
+// HealthCheck represents the health check configuration for a load balancer
+type HealthCheck struct {
+	Type     string
+	Interval string // e.g., "5s"
+	Timeout  string // e.g., "2s"
+	Path     string // For "web" type
+}
+
+// LoadBalancer represents the load balancing configuration for a route
+type LoadBalancer struct {
+	Algorithm   string
+	HealthCheck *HealthCheck
+}
+
 // Route represents a path rule
 type Route struct {
 	Path              string
@@ -123,6 +137,7 @@ type Route struct {
 	AuthBasicUserFile string
 	ProxySSLVerify    bool
 	LimitRate         int
+	LoadBalancer      *LoadBalancer
 }
 
 // LoadConfig loads configuration from a .conf file and optional include directory
