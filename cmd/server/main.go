@@ -15,6 +15,7 @@ func main() {
 	configFile := flag.String("config", "titan-server.conf", "Path to configuration file")
 	nodeID := flag.String("node-id", "", "Unique Node ID for the cluster")
 	raftAddr := flag.String("raft-addr", "127.0.0.1:9000", "Raft bind address")
+	raftAdvertiseAddr := flag.String("raft-advertise-addr", "", "Raft advertise address. If not set, uses raft-addr.")
 	raftDir := flag.String("raft-dir", "/etc/titan/raft", "Raft data directory")
 	joinAddr := flag.String("join", "", "Address of a cluster node to join")
 	bootstrap := flag.Bool("bootstrap", false, "Bootstrap the cluster (only for the first node)")
@@ -66,7 +67,12 @@ func main() {
 			return nil
 		})
 
-		node, err := cluster.NewNode(*nodeID, *raftAddr, *raftDir, fsm, *bootstrap)
+		advertiseAddr := *raftAdvertiseAddr
+		if advertiseAddr == "" {
+			advertiseAddr = *raftAddr
+		}
+
+		node, err := cluster.NewNode(*nodeID, *raftAddr, advertiseAddr, *raftDir, fsm, *bootstrap)
 		if err != nil {
 			log.Fatalf("Failed to create raft node: %v", err)
 		}
