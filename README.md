@@ -242,43 +242,66 @@ Une fois les nœuds joints, toute modification de configuration effectuée sur l
 
 ### Module WAF (Web Application Firewall)
 
-Titan intègre un WAF pour protéger vos applications contre les attaques courantes (OWASP Top 10). Le WAF s'active par site et inspecte le trafic entrant.
+Titan intègre un WAF pour protéger vos applications contre les attaques courantes (OWASP Top 10). Le WAF peut être configuré au niveau d'un site (`server`) ou de manière plus fine pour une route spécifique (`location`).
 
-**Exemple de configuration WAF pour un site :**
+Les configurations sont héritées : une directive définie dans une `location` surcharge la même directive définie dans le `server`.
+
+**Exemple de configuration avancé :**
 ```nginx
 server {
     server_name www.votre-site.com;
 
     # ... autres directives ...
 
+    # Configuration WAF globale pour le site
     waf {
         enabled on;
         rate_limit 100; # Req/min par IP
-        deny_countries CN RU IR;
-        deny_list 1.2.3.4 5.6.7.8;
-        allow_list 127.0.0.1;
-        under_attack_mode off;
+        allow_list 127.0.0.1; # Permet l'accès à l'IP du bureau
+    }
 
-        # Activer les protections spécifiques
-        check_sqli on;
-        check_xss on;
-        check_lfi on;
-        check_ua on;
+    # Pas de protection pour les assets statiques
+    location /static/ {
+        root /var/www/assets;
+        waf {
+            enabled off;
+        }
+    }
+
+    # Protection renforcée pour la page de connexion
+    location /login {
+        proxy_pass http://backend;
+        waf {
+            rate_limit 5; # Limite très stricte
+            js_challenge {
+                enabled on; # Active la vérification par challenge JavaScript
+            }
+        }
     }
 }
 ```
 
 **Directives de configuration :**
-*   `enabled [on|off];` : Active ou désactive le WAF pour ce site.
+*   `enabled [on|off];` : Active ou désactive le WAF.
 *   `rate_limit [nombre];` : Limite le nombre de requêtes par minute pour une même adresse IP.
 *   `allow_list [ip1] [ip2] ...;` : Liste blanche d'IPs qui contournent le WAF.
 *   `deny_list [ip1] [ip2] ...;` : Liste noire d'IPs à bloquer.
 *   `deny_countries [code1] [code2] ...;` : Bloque le trafic provenant des pays spécifiés (codes ISO 3166-1 alpha-2).
-*   `under_attack_mode [on|off];` : Active un mode de sécurité élevé qui bloque temporairement tout le trafic.
+*   `under_attack_mode [on|off];` : Active un mode de sécurité élevé qui présente un challenge JS à tous les visiteurs.
 *   `check_sqli [on|off];` : Active la protection contre les injections SQL.
 *   `check_xss [on|off];` : Active la protection contre le Cross-Site Scripting.
 *   `check_lfi [on|off];` : Active la protection contre l'inclusion de fichiers locaux.
 *   `check_ua [on|off];` : Active le blocage des User-Agents malveillants.
+
+**Challenge JavaScript :**
+Le bloc `js_challenge` force le navigateur du visiteur à résoudre un simple challenge pour prouver qu'il n'est pas un bot.
+```nginx
+waf {
+    js_challenge {
+        enabled on;
+    }
+}
+```
 
 **Configuration Globale Requise pour GeoIP :**
 Pour utiliser `deny_countries`, vous devez spécifier le chemin vers une base de données GeoIP (format MMDB) dans votre configuration globale :
