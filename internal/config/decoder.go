@@ -17,6 +17,8 @@ func DecodeAST(ast *parser.ConfigAST) (*Config, error) {
 			if len(d.Parameters) > 0 { cfg.HTTPPort = d.Parameters[0] }
 		case "https_port":
 			if len(d.Parameters) > 0 { cfg.HTTPSPort = d.Parameters[0] }
+		case "ssl_path":
+			if len(d.Parameters) > 0 { cfg.SSLPath = d.Parameters[0] }
 		case "max_threads":
 			if len(d.Parameters) > 0 {
 				val, err := strconv.Atoi(d.Parameters[0])
@@ -68,6 +70,10 @@ func DecodeAST(ast *parser.ConfigAST) (*Config, error) {
 				}
 			}
 		}
+	}
+
+	if cfg.SSLPath == "" {
+		cfg.SSLPath = "/etc/titan/"
 	}
 
 	return cfg, nil
