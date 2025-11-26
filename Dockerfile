@@ -29,6 +29,9 @@ COPY --from=builder /app/titan-web-server .
 # Copier le fichier de configuration par défaut
 COPY titan-server.conf .
 
+# Copier le fichier de version
+COPY VERSION .
+
 # Exposer le port HTTP par défaut
 EXPOSE 8080
 
