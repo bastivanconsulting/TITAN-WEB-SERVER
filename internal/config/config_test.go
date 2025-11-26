@@ -85,3 +85,43 @@ func TestRoundTrip(t *testing.T) {
 		t.Errorf("Route path mismatch")
 	}
 }
+
+func TestWAFEncoding(t *testing.T) {
+	cfg := &Config{
+		Sites: []Site{
+			{
+				Domain: "secure.com",
+				WAF: &WAFConfig{
+					Enabled:   true,
+					RateLimit: 10,
+					JSChallenge: &JSChallengeConfig{
+						Enabled: true,
+					},
+				},
+				Routes: []Route{
+					{
+						Path: "/",
+						Type: "static",
+						FileRoot: "/var/www/secure",
+					},
+				},
+			},
+		},
+	}
+
+	encoded := EncodeToConf(cfg)
+
+	// Check for key WAF directives
+	if !strings.Contains(encoded, "waf {") {
+		t.Error("Encoded config missing waf block")
+	}
+	if !strings.Contains(encoded, "rate_limit 10;") {
+		t.Error("Encoded config missing rate_limit")
+	}
+	if !strings.Contains(encoded, "js_challenge {") {
+		t.Error("Encoded config missing js_challenge block")
+	}
+	if !strings.Contains(encoded, "enabled on;") {
+		t.Error("Encoded config missing 'enabled on' in js_challenge")
+	}
+}
