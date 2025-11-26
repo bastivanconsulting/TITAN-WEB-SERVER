@@ -150,6 +150,8 @@ L'interface supporte deux modes d'authentification (configurés via `admin_user`
 
 ## 🌐 Mode Cluster (Distribué)
 
+> **⚠️ Attention :** Le mode cluster est actuellement en **version bêta**. Il n'est pas encore considéré comme 100% fonctionnel et son utilisation en environnement de production est déconseillée.
+
 Titan Server intègre un moteur de consensus **Raft** pour la synchronisation automatique des configurations et des certificats SSL entre plusieurs nœuds.
 
 ### Concepts Clés
