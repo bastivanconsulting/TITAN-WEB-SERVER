@@ -13,10 +13,12 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"titan-web-server/internal/cache"
+	"titan-web-server/internal/config"
 )
 
 const injectionScript = `
@@ -35,9 +37,49 @@ const injectionScript = `
 // ErrorHandlerFunc is a callback for handling proxy errors
 type ErrorHandlerFunc func(w http.ResponseWriter, r *http.Request, err error)
 
+// Target represents a backend server for the proxy
+type Target struct {
+	URL         *url.URL
+	Proxy       *httputil.ReverseProxy
+	mu          sync.RWMutex
+	healthy     bool
+	activeConns int64
+}
+
+// SetHealthy sets the health status of the target
+func (t *Target) SetHealthy(status bool) {
+	t.mu.Lock()
+	t.healthy = status
+	t.mu.Unlock()
+}
+
+// IsHealthy returns the health status of the target
+func (t *Target) IsHealthy() bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.healthy
+}
+
+// IncConns increments the active connection count
+func (t *Target) IncConns() {
+	atomic.AddInt64(&t.activeConns, 1)
+}
+
+// DecConns decrements the active connection count
+func (t *Target) DecConns() {
+	atomic.AddInt64(&t.activeConns, -1)
+}
+
+// GetActiveConns returns the number of active connections
+func (t *Target) GetActiveConns() int64 {
+	return atomic.LoadInt64(&t.activeConns)
+}
+
 // ProxyOptions configures the proxy
 type ProxyOptions struct {
 	Targets        []string
+	Algorithm      string // "round_robin", "least_conn", "ip_hash"
+	HealthCheck    *config.HealthCheck
 	ErrorHandler   ErrorHandlerFunc
 	Cache          cache.Cache
 	CacheTTL       time.Duration
@@ -87,42 +129,89 @@ func (rec *limitRecorder) Flush() {
 	}
 }
 
+// LoadBalancer manages the backend targets and load balancing logic
+type LoadBalancer struct {
+	targets   []*Target
+	algorithm string
+	mu        sync.RWMutex
+	counter   uint64
+}
+
+// NewLoadBalancer creates a new LoadBalancer
+func NewLoadBalancer(targets []*Target, algorithm string) *LoadBalancer {
+	return &LoadBalancer{
+		targets:   targets,
+		algorithm: algorithm,
+	}
+}
+
+// selectTarget selects a healthy target based on the load balancing algorithm
+func (lb *LoadBalancer) selectTarget(r *http.Request) *Target {
+	lb.mu.RLock()
+	defer lb.mu.RUnlock()
+
+	var healthyTargets []*Target
+	for _, t := range lb.targets {
+		if t.IsHealthy() {
+			healthyTargets = append(healthyTargets, t)
+		}
+	}
+
+	if len(healthyTargets) == 0 {
+		return nil
+	}
+
+	switch lb.algorithm {
+	case "least_conn":
+		var best *Target
+		for _, t := range healthyTargets {
+			if best == nil || t.GetActiveConns() < best.GetActiveConns() {
+				best = t
+			}
+		}
+		return best
+	case "ip_hash":
+		ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+		hash := sha256.Sum256([]byte(ip))
+		idx := int(hash[0]) % len(healthyTargets)
+		return healthyTargets[idx]
+	default: // round_robin
+		idx := atomic.AddUint64(&lb.counter, 1) % uint64(len(healthyTargets))
+		return healthyTargets[idx]
+	}
+}
+
 // NewProxyHandler creates a standard ReverseProxy with optional caching and load balancing
 func NewProxyHandler(opts ProxyOptions) (http.Handler, error) {
 	if len(opts.Targets) == 0 {
 		return nil, fmt.Errorf("no targets provided")
 	}
 
-	var proxies []*httputil.ReverseProxy
-	for _, target := range opts.Targets {
-		targetURL, err := url.Parse(target)
+	var targets []*Target
+	for _, targetStr := range opts.Targets {
+		targetURL, err := url.Parse(targetStr)
 		if err != nil {
 			return nil, err
 		}
 
 		proxy := httputil.NewSingleHostReverseProxy(targetURL)
 
-		if opts.ProxySSLVerify == false {
+		if !opts.ProxySSLVerify {
 			proxy.Transport = &http.Transport{
 				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 			}
 		}
 
-		// Custom Director modification
 		originalDirector := proxy.Director
 		proxy.Director = func(req *http.Request) {
 			originalDirector(req)
-			// Set headers to reflect the original request
 			req.Header.Set("X-Forwarded-Host", req.Host)
 			req.Host = targetURL.Host
-
-			// Set X-Real-IP
 			if ip, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
 				req.Header.Set("X-Real-IP", ip)
 			}
 		}
 
-		// Modify response
 		proxy.ModifyResponse = func(resp *http.Response) error {
 			// Remove identifying headers
 			resp.Header.Del("Server")
@@ -185,20 +274,32 @@ func NewProxyHandler(opts ProxyOptions) (http.Handler, error) {
 		if opts.ErrorHandler != nil {
 			proxy.ErrorHandler = opts.ErrorHandler
 		}
-		proxies = append(proxies, proxy)
+
+		targets = append(targets, &Target{
+			URL:     targetURL,
+			Proxy:   proxy,
+			healthy: true, // Start as healthy
+		})
 	}
 
-	// Round-robin counter
-	var counter uint64
+	lb := NewLoadBalancer(targets, opts.Algorithm)
 
-	// Main Proxy Handler
+	if opts.HealthCheck != nil {
+		go startHealthChecks(targets, opts.HealthCheck)
+	}
+
 	proxyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Select target (Round Robin)
-		idx := atomic.AddUint64(&counter, 1) % uint64(len(proxies))
-		proxies[idx].ServeHTTP(w, r)
+		target := lb.selectTarget(r)
+		if target == nil {
+			opts.ErrorHandler(w, r, fmt.Errorf("no healthy backends"))
+			return
+		}
+
+		target.IncConns()
+		defer target.DecConns()
+		target.Proxy.ServeHTTP(w, r)
 	})
 
-	// If no cache is configured, return the raw proxy handler
 	if opts.Cache == nil {
 		return proxyHandler, nil
 	}
@@ -293,4 +394,50 @@ func injectBefore(s, tag, content []byte) []byte {
 		return s
 	}
 	return append(s[:idx], append(content, s[idx:]...)...)
+}
+
+func startHealthChecks(targets []*Target, hc *config.HealthCheck) {
+	interval, err := time.ParseDuration(hc.Interval)
+	if err != nil {
+		interval = 5 * time.Second
+	}
+	timeout, err := time.ParseDuration(hc.Timeout)
+	if err != nil {
+		timeout = 2 * time.Second
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		for _, target := range targets {
+			go checkHealth(target, hc, timeout)
+		}
+		<-ticker.C
+	}
+}
+
+func checkHealth(target *Target, hc *config.HealthCheck, timeout time.Duration) {
+	var healthy bool
+	switch hc.Type {
+	case "web":
+		client := http.Client{
+			Timeout: timeout,
+		}
+		checkURL := target.URL.String() + hc.Path
+		resp, err := client.Get(checkURL)
+		if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			healthy = true
+		}
+		if resp != nil {
+			resp.Body.Close()
+		}
+	default: // "tcp"
+		conn, err := net.DialTimeout("tcp", target.URL.Host, timeout)
+		if err == nil {
+			healthy = true
+			conn.Close()
+		}
+	}
+	target.SetHealthy(healthy)
 }

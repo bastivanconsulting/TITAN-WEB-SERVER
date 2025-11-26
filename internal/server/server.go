@@ -273,6 +273,10 @@ func (s *Server) initHandlersLocked() error {
 					CacheTTL:       60 * time.Second, // Default TTL
 					ProxySSLVerify: route.ProxySSLVerify,
 				}
+				if route.LoadBalancer != nil {
+					opts.Algorithm = route.LoadBalancer.Algorithm
+					opts.HealthCheck = route.LoadBalancer.HealthCheck
+				}
 				proxyHandler, err := proxy.NewProxyHandler(opts)
 				if err != nil {
 					return fmt.Errorf("error initializing proxy for %s: %v", key, err)
