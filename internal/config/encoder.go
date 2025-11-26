@@ -51,11 +51,11 @@ func EncodeToConf(c *Config) string {
 			if site.SSL.Email != "" {
 				sb.WriteString(fmt.Sprintf("            email \"%s\";\n", site.SSL.Email))
 			}
-			if site.SSL.CertFile != "" {
-				sb.WriteString(fmt.Sprintf("            cert_file \"%s\";\n", site.SSL.CertFile))
+			if site.SSL.Certificate != "" {
+				sb.WriteString(fmt.Sprintf("            ssl_certificate \"%s\";\n", site.SSL.Certificate))
 			}
-			if site.SSL.KeyFile != "" {
-				sb.WriteString(fmt.Sprintf("            key_file \"%s\";\n", site.SSL.KeyFile))
+			if site.SSL.CertificateKey != "" {
+				sb.WriteString(fmt.Sprintf("            ssl_certificate_key \"%s\";\n", site.SSL.CertificateKey))
 			}
 			if site.SSL.Provider != "" {
 				sb.WriteString(fmt.Sprintf("            provider %s;\n", site.SSL.Provider))

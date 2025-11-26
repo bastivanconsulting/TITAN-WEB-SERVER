@@ -89,13 +89,13 @@ type JSChallengeConfig struct {
 
 // SSL represents SSL configuration
 type SSL struct {
-	Enabled      bool
-	Email        string
-	CertFile     string
-	KeyFile      string
-	Provider     string
-	HSTS         *HSTSConfig
-	OCSPStapling bool
+	Enabled           bool
+	Email             string
+	Provider          string
+	HSTS              *HSTSConfig
+	OCSPStapling      bool
+	Certificate       string
+	CertificateKey    string
 }
 
 // HSTSConfig represents HTTP Strict Transport Security settings

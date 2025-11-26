@@ -27,6 +27,7 @@ import (
 	"titan-web-server/internal/cache"
 	"titan-web-server/internal/cluster"
 	"titan-web-server/internal/config"
+	"titan-web-server/internal/htaccess"
 	"titan-web-server/internal/module"
 	"titan-web-server/internal/proxy"
 	"titan-web-server/internal/tlsutil"
@@ -52,7 +53,7 @@ func acmeHealthCheckWrapper(next http.Handler) http.Handler {
 	})
 }
 
-//go:embed templates/error.html
+//go:embed templates/error_4xx.html templates/error_5xx.html
 var templateFS embed.FS
 
 // ErrorData holds data for the error template
@@ -79,15 +80,16 @@ type Server struct {
 	proxyHandlers map[string]http.Handler
 	wafInstances  map[string]*waf.WAF
 	jsModules     map[string]*module.JSModule
+	htaccess      map[string]*htaccess.HTAccess
 }
 
 // NewServer creates a new server instance
 func NewServer(cfg *config.Config, configPath string, debug bool) *Server {
-	tpl, err := template.ParseFS(templateFS, "templates/error.html")
+	tpl, err := template.ParseFS(templateFS, "templates/*.html")
 	if err != nil {
 		// Fallback if template is missing or error
 		tpl = nil
-		fmt.Printf("Warning: Could not load error.html: %v\n", err)
+		fmt.Printf("Warning: Could not load error templates: %v\n", err)
 	}
 
 	// Initialize Cache
@@ -129,6 +131,7 @@ func NewServer(cfg *config.Config, configPath string, debug bool) *Server {
 		proxyHandlers: make(map[string]http.Handler),
 		wafInstances:  make(map[string]*waf.WAF),
 		jsModules:     make(map[string]*module.JSModule),
+		htaccess:      make(map[string]*htaccess.HTAccess),
 	}
 
 	// Initialize handlers (this also sorts routes)
@@ -182,6 +185,7 @@ func (s *Server) initHandlersLocked() error {
 
 	// Clear old JS modules
 	s.jsModules = make(map[string]*module.JSModule)
+	s.htaccess = make(map[string]*htaccess.HTAccess)
 
 	for i := range s.Config.Sites {
 		site := &s.Config.Sites[i]
@@ -286,6 +290,21 @@ func (s *Server) initHandlersLocked() error {
 					}
 				}
 			}
+
+			if (route.Type == "static" || route.Type == "php") && route.FileRoot != "" {
+				htaccessPath := route.FileRoot + "/.htaccess"
+				if _, err := os.Stat(htaccessPath); err == nil {
+					if _, exists := s.htaccess[htaccessPath]; !exists {
+						hta, err := htaccess.Parse(htaccessPath)
+						if err != nil {
+							log.Printf("Error parsing .htaccess file for route %s: %v", route.Path, err)
+						} else {
+							s.htaccess[htaccessPath] = hta
+							log.Printf(".htaccess file loaded for route: %s", route.Path)
+						}
+					}
+				}
+			}
 		}
 	}
 	return nil
@@ -317,6 +336,7 @@ func (s *Server) renderError(w http.ResponseWriter, r *http.Request, code int, t
 		fmt.Fprintf(w, "%d - %s: %s", code, title, message)
 		return
 	}
+
 	data := ErrorData{
 		Code:     code,
 		Title:    title,
@@ -324,7 +344,13 @@ func (s *Server) renderError(w http.ResponseWriter, r *http.Request, code int, t
 		RayID:    fmt.Sprintf("REQ-%d", time.Now().UnixNano()),
 		ClientIP: r.RemoteAddr,
 	}
-	s.Tpl.Execute(w, data)
+
+	templateName := "error_4xx.html"
+	if code >= 500 {
+		templateName = "error_5xx.html"
+	}
+
+	s.Tpl.ExecuteTemplate(w, templateName, data)
 }
 
 // ServeHTTP implements the http.Handler interface
@@ -341,6 +367,22 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 		return
+	}
+
+	// HTTPS Redirect
+	if r.TLS == nil {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		for _, site := range s.Config.Sites {
+			if site.Domain == r.Host && site.SSL != nil && site.SSL.Enabled {
+				target := "https://" + r.Host + r.URL.Path
+				if r.URL.RawQuery != "" {
+					target += "?" + r.URL.RawQuery
+				}
+				http.Redirect(w, r, target, http.StatusPermanentRedirect)
+				return
+			}
+		}
 	}
 
 
@@ -434,6 +476,20 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.mu.RLock()
 			jsModule = s.jsModules[matchedRoute.JSModule]
 			s.mu.RUnlock()
+		}
+
+		// Apply .htaccess rewrite rules
+		if (matchedRoute.Type == "static" || matchedRoute.Type == "php") && matchedRoute.FileRoot != "" {
+			htaccessPath := matchedRoute.FileRoot + "/.htaccess"
+			s.mu.RLock()
+			hta, exists := s.htaccess[htaccessPath]
+			s.mu.RUnlock()
+			if exists {
+				newURI := hta.Evaluate(r.URL.Path, r.Header)
+				if newURI != r.URL.Path {
+					r.URL.Path = newURI
+				}
+			}
 		}
 
 		// Execute JS module if it exists
@@ -612,8 +668,8 @@ func (s *Server) Start() error {
 
 	for _, site := range s.Config.Sites {
 		if site.SSL != nil && site.SSL.Enabled {
-			if site.SSL.Provider == "manual" {
-				cert, err := tls.LoadX509KeyPair(site.SSL.CertFile, site.SSL.KeyFile)
+			if site.SSL.Certificate != "" && site.SSL.CertificateKey != "" {
+				cert, err := tls.LoadX509KeyPair(site.SSL.Certificate, site.SSL.CertificateKey)
 				if err != nil {
 					return fmt.Errorf("error loading cert for %s: %w", site.Domain, err)
 				}

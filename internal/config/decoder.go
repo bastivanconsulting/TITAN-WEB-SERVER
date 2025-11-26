@@ -161,10 +161,10 @@ func decodeSiteBlock(b parser.Block) (*Site, error) {
 					site.SSL.Enabled = d.Parameters[0] == "on"
 				case "email":
 					site.SSL.Email = d.Parameters[0]
-				case "cert_file":
-					site.SSL.CertFile = d.Parameters[0]
-				case "key_file":
-					site.SSL.KeyFile = d.Parameters[0]
+				case "ssl_certificate":
+					site.SSL.Certificate = d.Parameters[0]
+				case "ssl_certificate_key":
+					site.SSL.CertificateKey = d.Parameters[0]
 				case "provider":
 					site.SSL.Provider = d.Parameters[0]
 				case "ocsp_stapling":

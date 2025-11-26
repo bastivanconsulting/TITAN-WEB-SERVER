@@ -41,8 +41,12 @@ Titan Server utilise un format de configuration de type Nginx.
 
 ```nginx
 # Ports d'écoute
+# Le serveur écoutera sur toutes les interfaces, y compris IPv4 et IPv6.
 http_port :8080;
 https_port :8443;
+
+# Pour écouter uniquement sur une adresse IPv6 spécifique :
+# http_port [::1]:8080;
 
 # Logs
 log_dir "/var/log/titan/";
@@ -64,6 +68,43 @@ server {
     }
 }
 ```
+
+---
+
+## 🔒 Configuration SSL
+
+Titan prend en charge SSL/TLS via la configuration manuelle des certificats.
+
+### Exemple de configuration SSL
+
+```nginx
+server {
+    server_name www.example.com;
+    listen 443 ssl;
+
+    ssl_certificate /chemin/vers/votre/certificat.pem;
+    ssl_certificate_key /chemin/vers/votre/cle.pem;
+
+    location / {
+        root /var/www/html;
+    }
+}
+```
+
+### Redirection HTTPS Automatique
+
+Si un site est configuré avec SSL, le serveur redirigera automatiquement les requêtes HTTP vers HTTPS avec une redirection permanente (301).
+
+---
+
+##  htaccess
+
+Titan prend en charge un sous-ensemble des directives des fichiers `.htaccess` pour les routes statiques et PHP. Placez simplement un fichier `.htaccess` à la racine de votre site.
+
+### Directives prises en charge
+
+*   `RewriteRule`
+*   `RewriteCond`
 
 ---
 
