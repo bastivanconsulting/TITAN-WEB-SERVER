@@ -230,10 +230,13 @@ func (n *Node) Join(nodeID, addr string) error {
 	}
 
 	for _, srv := range configFuture.Configuration().Servers {
-		if srv.ID == raft.ServerID(nodeID) || srv.Address == raft.ServerAddress(addr) {
-			if srv.Address == raft.ServerAddress(addr) && srv.ID == raft.ServerID(nodeID) {
-				return nil // already joined
+		if srv.ID == raft.ServerID(nodeID) {
+			if srv.Address == raft.ServerAddress(addr) {
+				// Node is already in the cluster with the correct address.
+				return nil
 			}
+			// Node is in the cluster but with a different address. Remove it first.
+			log.Printf("Node %s is re-joining with a new address. Removing old entry for %s before adding new one for %s.", nodeID, srv.Address, addr)
 			future := n.Raft.RemoveServer(srv.ID, 0, 0)
 			if err := future.Error(); err != nil {
 				return err
@@ -241,6 +244,7 @@ func (n *Node) Join(nodeID, addr string) error {
 		}
 	}
 
+	log.Printf("Adding new node %s to the cluster with address %s.", nodeID, addr)
 	f := n.Raft.AddVoter(raft.ServerID(nodeID), raft.ServerAddress(addr), 0, 0)
 	if err := f.Error(); err != nil {
 		return err

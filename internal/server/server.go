@@ -477,7 +477,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 0. Intercept API and Admin requests
 	// Note: Internal API for cluster sync bypasses normal auth for performance,
 	// but relies on the shared API key.
-	if strings.HasPrefix(r.URL.Path, "/api/internal/certs/") {
+	isCertSync := strings.HasPrefix(r.URL.Path, "/api/internal/certs/")
+	isInternalAPI := strings.HasPrefix(r.URL.Path, "/api/internal/")
+
+	// Enforce mTLS at the application layer for internal APIs.
+	// The server's TLS config is set to `VerifyClientCertIfGiven` to allow the cert sync
+	// bootstrap to work. For all other internal endpoints, we must enforce a valid cert.
+	if isInternalAPI && !isCertSync {
+		if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 {
+			http.Error(w, "Forbidden: A valid client certificate is required for this endpoint", http.StatusForbidden)
+			return
+		}
+	}
+
+
+	if isCertSync {
 		s.handleCertSync(rw, r)
 		return
 	}
@@ -1082,10 +1096,15 @@ func (s *Server) getConfigForClient(ocspManager *OCSPManager, certMap map[string
 				clientCAs := x509.NewCertPool()
 				clientCAs.AppendCertsFromPEM(caCertPEM)
 
+				// To solve the "chicken-and-egg" problem of certificate synchronization,
+				// we request a client certificate but do not require it at the TLS layer.
+				// This allows a new node without a trusted cert to connect to the cert
+				// sync endpoints. The application-layer handler (`ServeHTTP`) is then
+				// responsible for enforcing a valid client cert for all other internal APIs.
 				return &tls.Config{
 					Certificates: []tls.Certificate{cert},
 					ClientCAs:    clientCAs,
-					ClientAuth:   tls.RequireAndVerifyClientCert,
+					ClientAuth:   tls.VerifyClientCertIfGiven,
 				}, nil
 			}
 		}
