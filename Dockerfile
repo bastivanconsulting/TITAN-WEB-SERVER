@@ -35,5 +35,5 @@ COPY VERSION .
 # Exposer le port HTTP par défaut
 EXPOSE 8080
 
-# Commande pour démarrer le serveur
-CMD ["./titan-web-server"]
+# Point d'entrée pour démarrer le serveur
+ENTRYPOINT ["./titan-web-server"]
