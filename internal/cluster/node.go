@@ -236,6 +236,7 @@ func (n *Node) Join(nodeID, addr string) error {
 				return nil
 			}
 			// Node is in the cluster but with a different address. Remove it first.
+			log.Printf("Node %s is re-joining with a new address. Removing old entry for %s before adding new one for %s.", nodeID, srv.Address, addr)
 			future := n.Raft.RemoveServer(srv.ID, 0, 0)
 			if err := future.Error(); err != nil {
 				return err
@@ -243,6 +244,7 @@ func (n *Node) Join(nodeID, addr string) error {
 		}
 	}
 
+	log.Printf("Adding new node %s to the cluster with address %s.", nodeID, addr)
 	f := n.Raft.AddVoter(raft.ServerID(nodeID), raft.ServerAddress(addr), 0, 0)
 	if err := f.Error(); err != nil {
 		return err
