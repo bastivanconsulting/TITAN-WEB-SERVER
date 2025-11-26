@@ -16,8 +16,8 @@
 
 1.  **Cloner le dépôt** :
     ```bash
-    git clone https://github.com/bastivanconsulting/WebServer.git
-    cd WebServer
+    git clone git@github.com:bastivanconsulting/TITAN-WEB-SERVER.git
+    cd TITAN-WEB-SERVER
     ```
 
 2.  **Compiler le binaire** :
