@@ -17,12 +17,12 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/crypto/acme/autocert"
 	"golang.org/x/time/rate"
 
 	"github.com/quic-go/quic-go/http3"
 	"github.com/yookoala/gofast"
 
+	"titan-web-server/internal/acme"
 	"titan-web-server/internal/auth"
 	"titan-web-server/internal/cache"
 	"titan-web-server/internal/cluster"
@@ -74,13 +74,198 @@ type Server struct {
 	Cache         cache.Cache
 	Logger        *Logger
 	Debug         bool
-	autocertManager *autocert.Manager
+	acmeManager   *acme.ACMEManager
 	ClusterNode   *cluster.Node // Optional cluster node
 	phpHandlers   map[string]http.Handler
 	proxyHandlers map[string]http.Handler
 	wafInstances  map[string]*waf.WAF
 	jsModules     map[string]*module.JSModule
 	htaccess      map[string]*htaccess.HTAccess
+}
+
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if s.acmeManager != nil && s.acmeManager.HandleChallenge(w, r) {
+		return
+	}
+
+	start := time.Now()
+	// Add global Server header
+	if isContainerized() {
+		w.Header().Set("Server", "Titan Web Container")
+	} else {
+		w.Header().Set("Server", "Titan Web Server")
+	}
+
+	// Capture status code for logging
+	rw := NewResponseWriter(w)
+
+	// ACME Health Check for diagnostics
+	if r.URL.Path == "/.well-known/acme-challenge/healthz" {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+		return
+	}
+
+	// HTTPS Redirect
+	if r.TLS == nil {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		for _, site := range s.Config.Sites {
+			if site.Domain == r.Host && site.SSL != nil && site.SSL.Enabled {
+				target := "https://" + r.Host + r.URL.Path
+				if r.URL.RawQuery != "" {
+					target += "?" + r.URL.RawQuery
+				}
+				http.Redirect(w, r, target, http.StatusPermanentRedirect)
+				return
+			}
+		}
+	}
+
+
+	// 1. Match Host
+	host := r.Host
+	// Remove port if present
+	if strings.Contains(host, ":") {
+		var err error
+		host, _, err = net.SplitHostPort(host)
+		if err != nil {
+			// Fallback if parsing fails (e.g. might be just IPv6 without brackets? rarely happens in Host header)
+			// But for safety, keep original string if Split fails unless empty
+			if strings.Contains(r.Host, ":") {
+				// simple fallback for IPv4/Hostname
+				host = strings.Split(r.Host, ":")[0]
+			}
+		}
+	}
+
+	// Read config safely
+	s.mu.RLock()
+	cfg := s.Config
+	logger := s.Logger
+	s.mu.RUnlock()
+
+	var matchedSite *config.Site
+	for _, site := range cfg.Sites {
+		if site.Domain == host {
+			matchedSite = &site
+			break
+		}
+	}
+
+	if matchedSite == nil {
+		s.renderError(rw, r, 404, "Site non trouvé", "Le domaine demandé n'est pas configuré sur ce serveur.")
+		// Log 404 for unknown host
+		if logger != nil {
+			logger.AccessLog("unknown", r.Method, r.URL.Path, r.RemoteAddr, 404, time.Since(start))
+		}
+		return
+	}
+
+	// HSTS Handling
+	if matchedSite.SSL != nil && matchedSite.SSL.Enabled && matchedSite.SSL.HSTS != nil && matchedSite.SSL.HSTS.Enabled {
+		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+			val := fmt.Sprintf("max-age=%d", matchedSite.SSL.HSTS.MaxAge)
+			if matchedSite.SSL.HSTS.IncludeSubDomains {
+				val += "; includeSubDomains"
+			}
+			if matchedSite.SSL.HSTS.Preload {
+				val += "; preload"
+			}
+			rw.Header().Set("Strict-Transport-Security", val)
+		}
+	}
+
+	defer func() {
+		// Access Log
+		if logger != nil {
+			logger.AccessLog(matchedSite.Domain, r.Method, r.URL.Path, r.RemoteAddr, rw.Status(), time.Since(start))
+		}
+	}()
+
+	// Execute JS module if configured
+	var jsModule *module.JSModule
+	if matchedSite.JSModule != "" {
+		s.mu.RLock()
+		jsModule = s.jsModules[matchedSite.JSModule]
+		s.mu.RUnlock()
+	}
+
+	// The core routing and dispatching logic is defined as a handler.
+	coreHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 2. Match Route (Longest prefix match is usually best, but simple first match for now)
+		// We should ideally sort routes by length descending to avoid prefix collisions.
+		var matchedRoute *config.Route
+		for _, route := range matchedSite.Routes {
+			if strings.HasPrefix(r.URL.Path, route.Path) {
+				matchedRoute = &route
+				break
+			}
+		}
+
+		if matchedRoute == nil {
+			s.renderError(w, r, 404, "Route non trouvée", "Le chemin demandé n'existe pas.")
+			return
+		}
+
+		// Override site-level JS module if route-level is set
+		if matchedRoute.JSModule != "" {
+			s.mu.RLock()
+			jsModule = s.jsModules[matchedRoute.JSModule]
+			s.mu.RUnlock()
+		}
+
+		// Apply .htaccess rewrite rules
+		if (matchedRoute.Type == "static" || matchedRoute.Type == "php") && matchedRoute.FileRoot != "" {
+			htaccessPath := matchedRoute.FileRoot + "/.htaccess"
+			s.mu.RLock()
+			hta, exists := s.htaccess[htaccessPath]
+			s.mu.RUnlock()
+			if exists {
+				newURI := hta.Evaluate(r.URL.Path, r.Header)
+				if newURI != r.URL.Path {
+					r.URL.Path = newURI
+				}
+			}
+		}
+
+		// Execute JS module if it exists
+		if jsModule != nil {
+			err := jsModule.Run(r, w)
+			if err != nil {
+				s.renderError(w, r, 500, "Erreur de module", fmt.Sprintf("Le module JavaScript a rencontré une erreur: %v", err))
+				return
+			}
+		}
+
+		// Apply Basic Auth if configured
+		if matchedRoute.AuthBasicUserFile != "" {
+			auth.BasicAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// 3. Dispatch
+				s.dispatch(w, r, matchedRoute, matchedSite.Domain)
+			}), matchedRoute.AuthBasic, matchedRoute.AuthBasicUserFile).ServeHTTP(w, r)
+			return
+		}
+
+		// 3. Dispatch
+		s.dispatch(w, r, matchedRoute, matchedSite.Domain)
+	})
+
+	// Wrap with WAF if enabled for this site
+	s.mu.RLock()
+	siteWAF, wafEnabled := s.wafInstances[matchedSite.Domain]
+	s.mu.RUnlock()
+
+	var finalHandler http.Handler = coreHandler
+	if wafEnabled {
+		finalHandler = siteWAF.Middleware(finalHandler)
+	}
+
+	if matchedSite.Gzip {
+		finalHandler = GzipMiddleware(finalHandler)
+	}
+
+	finalHandler.ServeHTTP(rw, r)
 }
 
 // NewServer creates a new server instance
@@ -120,6 +305,16 @@ func NewServer(cfg *config.Config, configPath string, debug bool) *Server {
 		fmt.Printf("Warning: Failed to create log directory: %v\n", err)
 	}
 
+	var acmeManager *acme.ACMEManager
+	if cfg.ACME != nil && cfg.ACME.Enabled {
+		var err error
+		acmeManager, err = acme.NewManager(cfg)
+		if err != nil {
+			// Log the error but continue, as ACME might not be critical.
+			fmt.Printf("Warning: Could not initialize ACME manager: %v\n", err)
+		}
+	}
+
 	srv := &Server{
 		Config:        cfg,
 		ConfigPath:    configPath,
@@ -127,6 +322,7 @@ func NewServer(cfg *config.Config, configPath string, debug bool) *Server {
 		Cache:         c,
 		Logger:        logger,
 		Debug:         debug,
+		acmeManager:   acmeManager,
 		phpHandlers:   make(map[string]http.Handler),
 		proxyHandlers: make(map[string]http.Handler),
 		wafInstances:  make(map[string]*waf.WAF),
@@ -372,187 +568,6 @@ func isContainerized() bool {
 	return false
 }
 
-// ServeHTTP implements the http.Handler interface
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-	// Add global Server header
-	if isContainerized() {
-		w.Header().Set("Server", "Titan Web Container")
-	} else {
-		w.Header().Set("Server", "Titan Web Server")
-	}
-
-	// Capture status code for logging
-	rw := NewResponseWriter(w)
-
-	// ACME Health Check for diagnostics
-	if r.URL.Path == "/.well-known/acme-challenge/healthz" {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
-		return
-	}
-
-	// HTTPS Redirect
-	if r.TLS == nil {
-		s.mu.RLock()
-		defer s.mu.RUnlock()
-		for _, site := range s.Config.Sites {
-			if site.Domain == r.Host && site.SSL != nil && site.SSL.Enabled {
-				target := "https://" + r.Host + r.URL.Path
-				if r.URL.RawQuery != "" {
-					target += "?" + r.URL.RawQuery
-				}
-				http.Redirect(w, r, target, http.StatusPermanentRedirect)
-				return
-			}
-		}
-	}
-
-
-	// 1. Match Host
-	host := r.Host
-	// Remove port if present
-	if strings.Contains(host, ":") {
-		var err error
-		host, _, err = net.SplitHostPort(host)
-		if err != nil {
-			// Fallback if parsing fails (e.g. might be just IPv6 without brackets? rarely happens in Host header)
-			// But for safety, keep original string if Split fails unless empty
-			if strings.Contains(r.Host, ":") {
-				// simple fallback for IPv4/Hostname
-				host = strings.Split(r.Host, ":")[0]
-			}
-		}
-	}
-
-	// Read config safely
-	s.mu.RLock()
-	cfg := s.Config
-	logger := s.Logger
-	s.mu.RUnlock()
-
-	var matchedSite *config.Site
-	for _, site := range cfg.Sites {
-		if site.Domain == host {
-			matchedSite = &site
-			break
-		}
-	}
-
-	if matchedSite == nil {
-		s.renderError(rw, r, 404, "Site non trouvé", "Le domaine demandé n'est pas configuré sur ce serveur.")
-		// Log 404 for unknown host
-		if logger != nil {
-			logger.AccessLog("unknown", r.Method, r.URL.Path, r.RemoteAddr, 404, time.Since(start))
-		}
-		return
-	}
-
-	// HSTS Handling
-	if matchedSite.SSL != nil && matchedSite.SSL.Enabled && matchedSite.SSL.HSTS != nil && matchedSite.SSL.HSTS.Enabled {
-		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
-			val := fmt.Sprintf("max-age=%d", matchedSite.SSL.HSTS.MaxAge)
-			if matchedSite.SSL.HSTS.IncludeSubDomains {
-				val += "; includeSubDomains"
-			}
-			if matchedSite.SSL.HSTS.Preload {
-				val += "; preload"
-			}
-			rw.Header().Set("Strict-Transport-Security", val)
-		}
-	}
-
-	defer func() {
-		// Access Log
-		if logger != nil {
-			logger.AccessLog(matchedSite.Domain, r.Method, r.URL.Path, r.RemoteAddr, rw.Status(), time.Since(start))
-		}
-	}()
-
-	// Execute JS module if configured
-	var jsModule *module.JSModule
-	if matchedSite.JSModule != "" {
-		s.mu.RLock()
-		jsModule = s.jsModules[matchedSite.JSModule]
-		s.mu.RUnlock()
-	}
-
-	// The core routing and dispatching logic is defined as a handler.
-	coreHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 2. Match Route (Longest prefix match is usually best, but simple first match for now)
-		// We should ideally sort routes by length descending to avoid prefix collisions.
-		var matchedRoute *config.Route
-		for _, route := range matchedSite.Routes {
-			if strings.HasPrefix(r.URL.Path, route.Path) {
-				matchedRoute = &route
-				break
-			}
-		}
-
-		if matchedRoute == nil {
-			s.renderError(w, r, 404, "Route non trouvée", "Le chemin demandé n'existe pas.")
-			return
-		}
-
-		// Override site-level JS module if route-level is set
-		if matchedRoute.JSModule != "" {
-			s.mu.RLock()
-			jsModule = s.jsModules[matchedRoute.JSModule]
-			s.mu.RUnlock()
-		}
-
-		// Apply .htaccess rewrite rules
-		if (matchedRoute.Type == "static" || matchedRoute.Type == "php") && matchedRoute.FileRoot != "" {
-			htaccessPath := matchedRoute.FileRoot + "/.htaccess"
-			s.mu.RLock()
-			hta, exists := s.htaccess[htaccessPath]
-			s.mu.RUnlock()
-			if exists {
-				newURI := hta.Evaluate(r.URL.Path, r.Header)
-				if newURI != r.URL.Path {
-					r.URL.Path = newURI
-				}
-			}
-		}
-
-		// Execute JS module if it exists
-		if jsModule != nil {
-			err := jsModule.Run(r, w)
-			if err != nil {
-				s.renderError(w, r, 500, "Erreur de module", fmt.Sprintf("Le module JavaScript a rencontré une erreur: %v", err))
-				return
-			}
-		}
-
-		// Apply Basic Auth if configured
-		if matchedRoute.AuthBasicUserFile != "" {
-			auth.BasicAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				// 3. Dispatch
-				s.dispatch(w, r, matchedRoute, matchedSite.Domain)
-			}), matchedRoute.AuthBasic, matchedRoute.AuthBasicUserFile).ServeHTTP(w, r)
-			return
-		}
-
-		// 3. Dispatch
-		s.dispatch(w, r, matchedRoute, matchedSite.Domain)
-	})
-
-	// Wrap with WAF if enabled for this site
-	s.mu.RLock()
-	siteWAF, wafEnabled := s.wafInstances[matchedSite.Domain]
-	s.mu.RUnlock()
-
-	var finalHandler http.Handler = coreHandler
-	if wafEnabled {
-		finalHandler = siteWAF.Middleware(finalHandler)
-	}
-
-	if matchedSite.Gzip {
-		finalHandler = GzipMiddleware(finalHandler)
-	}
-
-	finalHandler.ServeHTTP(rw, r)
-}
 
 func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, matchedRoute *config.Route, domain string) {
 	if matchedRoute.LimitRate > 0 {
@@ -648,11 +663,15 @@ func (s *Server) Start() error {
 	// Error channel to catch failures from goroutines
 	errChan := make(chan error)
 
+	if s.acmeManager != nil {
+		s.acmeManager.CheckDomainsAndProvision()
+		s.acmeManager.Start()
+	}
+
 	// Build certificate map for SNI and prepare ACME
 	certMap := make(map[string]*tls.Certificate)
 	ocspManager := NewOCSPManager()
 	hasOCSP := false
-	var acmeDomains []string
 
 	// Load manual certificates from /etc/titan/certs/manual/
 	s.Config.ManualCerts = make(map[string]*tls.Certificate)
@@ -708,58 +727,17 @@ func (s *Server) Start() error {
 					ocspManager.AddCertificate(domain, &cert)
 					hasOCSP = true
 				}
-			} else if site.SSL.Provider == "letsencrypt" {
-				acmeDomains = append(acmeDomains, site.Domain)
 			}
 		}
-	}
-
-	var m *autocert.Manager
-	if len(acmeDomains) > 0 {
-		// Ensure certs directory exists
-		certDir := "/etc/titan/certs"
-		if err := os.MkdirAll(certDir, 0700); err != nil {
-			fmt.Printf("Warning: Failed to create certs directory: %v\n", err)
-		}
-
-		var acmeEmail string
-		for _, site := range s.Config.Sites {
-			if site.SSL != nil && site.SSL.Provider == "letsencrypt" && site.SSL.Email != "" {
-				acmeEmail = site.SSL.Email
-				break
-			}
-		}
-
-		if acmeEmail == "" {
-			log.Fatalf("ACME/Let's Encrypt is enabled but no email address is provided in any site configuration. This is required by Let's Encrypt TOS.")
-		}
-
-		m = &autocert.Manager{
-			Cache:      autocert.DirCache(certDir),
-			Prompt:     autocert.AcceptTOS,
-			HostPolicy: autocert.HostWhitelist(acmeDomains...),
-			Email:      acmeEmail,
-		}
-		s.autocertManager = m
-		s.debugLog("autocert manager configured with CacheDir: %s, HostPolicy: %v, Email: %s", certDir, acmeDomains, acmeEmail)
-		log.Printf("ACME/Let's Encrypt enabled for domains: %v (Email: %s)", acmeDomains, acmeEmail)
 	}
 
 	// Start HTTP Server
 	httpPort80Configured := s.Config.HTTPPort == ":80" || s.Config.HTTPPort == "80"
-
-	// If user configured an HTTP port, start that server.
 	if s.Config.HTTPPort != "" {
 		go func() {
 			log.Printf("Starting HTTP server on %s\n", s.Config.HTTPPort)
-			var handler http.Handler = s
-			if m != nil {
-				// If the user's server is on port 80, autocert can use it.
-				// Otherwise, autocert will need its own server (started below).
-				handler = m.HTTPHandler(handler)
-			}
 			// Always wrap with health check
-			finalHandler := acmeHealthCheckWrapper(handler)
+			finalHandler := acmeHealthCheckWrapper(s)
 			if err := http.ListenAndServe(s.Config.HTTPPort, finalHandler); err != nil {
 				errChan <- fmt.Errorf("HTTP server on %s failed: %w", s.Config.HTTPPort, err)
 			}
@@ -767,16 +745,11 @@ func (s *Server) Start() error {
 	}
 
 	// If ACME is enabled and no server is running on port 80, start one.
-	// This is required for the HTTP-01 challenge.
-	if m != nil && !httpPort80Configured {
+	if s.acmeManager != nil && !httpPort80Configured {
 		go func() {
 			log.Println("Starting dedicated ACME challenge server on :80")
-			// m.HTTPHandler(nil) handles challenges and redirects other HTTP -> HTTPS
-			handler := m.HTTPHandler(nil)
-			finalHandler := acmeHealthCheckWrapper(handler)
-			err := http.ListenAndServe(":80", finalHandler)
+			err := http.ListenAndServe(":80", s)
 			if err != nil {
-				// Don't fail fatally, but log a clear warning.
 				log.Printf("WARNING: Could not start ACME challenge server on port 80: %v. Let's Encrypt may fail.", err)
 			}
 		}()
@@ -869,14 +842,18 @@ func (s *Server) getConfigForClient(ocspManager *OCSPManager, certMap map[string
 			return &tls.Config{Certificates: []tls.Certificate{*cert}}, nil
 		}
 
-		// 3. Check ACME
-		if s.autocertManager != nil {
-			cert, err := s.autocertManager.GetCertificate(hello)
-			if err != nil {
-				s.debugLog("autocert.GetCertificate for %s returned error: %v, falling through", domain, err)
-			} else {
-				s.debugLog("Successfully obtained certificate for %s from ACME/autocert", domain)
-				return &tls.Config{Certificates: []tls.Certificate{*cert}}, nil
+		// 3. Check for ACME certificate
+		certDir := acme.DefaultCertPath
+		if s.Config.ACME != nil && s.Config.ACME.CertPath != "" {
+			certDir = s.Config.ACME.CertPath
+		}
+		acmeCertPath := certDir + domain + ".crt"
+		acmeKeyPath := certDir + domain + ".key"
+		if _, err := os.Stat(acmeCertPath); err == nil {
+			cert, err := tls.LoadX509KeyPair(acmeCertPath, acmeKeyPath)
+			if err == nil {
+				s.debugLog("Found ACME certificate for %s", domain)
+				return &tls.Config{Certificates: []tls.Certificate{cert}}, nil
 			}
 		}
 
