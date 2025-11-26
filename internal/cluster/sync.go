@@ -116,6 +116,7 @@ func (n *Node) sendManifestToFollower(followerID, addr string, manifest []FileIn
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-API-Key", apiKey)
+	req.Header.Set("X-Leader-HTTPS-Port", strings.TrimPrefix(httpsPort, ":"))
 
 	tlsConfig, err := createTLSConfig(n.ID, followerID)
 	if err != nil {
@@ -140,11 +141,23 @@ func (n *Node) sendManifestToFollower(followerID, addr string, manifest []FileIn
 }
 
 // HandleSyncRequest is an HTTP handler for followers to receive a manifest.
-func (n *Node) HandleSyncRequest(w http.ResponseWriter, r *http.Request, leaderAddress, apiKey, httpsPort string) {
+func (n *Node) HandleSyncRequest(w http.ResponseWriter, r *http.Request, apiKey, ownHTTPSPort string) {
 	var remoteManifest []FileInfo
 	if err := json.NewDecoder(r.Body).Decode(&remoteManifest); err != nil {
 		http.Error(w, "Invalid manifest", http.StatusBadRequest)
 		return
+	}
+
+	// The leader's address is the remote address of this request.
+	leaderAddress := r.RemoteAddr
+
+	// The leader tells us which port to use for the download callback.
+	// This is crucial if nodes are running on different HTTPS ports.
+	leaderHTTPSPort := r.Header.Get("X-Leader-HTTPS-Port")
+	if leaderHTTPSPort == "" {
+		// Fallback for older leaders or misconfiguration.
+		leaderHTTPSPort = strings.TrimPrefix(ownHTTPSPort, ":")
+		log.Printf("Warning: Leader did not send X-Leader-HTTPS-Port header. Falling back to own port: %s", leaderHTTPSPort)
 	}
 
 	localManifest, err := n.buildManifest()
@@ -162,7 +175,8 @@ func (n *Node) HandleSyncRequest(w http.ResponseWriter, r *http.Request, leaderA
 	for _, remoteInfo := range remoteManifest {
 		localInfo, exists := localFiles[remoteInfo.Path]
 		if !exists || localInfo.ModTime.Before(remoteInfo.ModTime) || localInfo.Size != remoteInfo.Size {
-			if err := n.downloadFile(leaderID, leaderAddress, remoteInfo.Path, apiKey, httpsPort); err != nil {
+			// Use the port the leader told us to use.
+			if err := n.downloadFile(leaderID, leaderAddress, remoteInfo.Path, apiKey, leaderHTTPSPort); err != nil {
 				log.Printf("Failed to download %s from leader: %v", remoteInfo.Path, err)
 				// Continue trying to sync other files
 			}
@@ -173,8 +187,8 @@ func (n *Node) HandleSyncRequest(w http.ResponseWriter, r *http.Request, leaderA
 }
 
 func (n *Node) downloadFile(leaderID, leaderAddr, path, apiKey, httpsPort string) error {
-	// The leader's address from Raft includes the Raft port. We need to replace it
-	// with the HTTPS port for the API call.
+	// The leader's address is the remote address from the sync request, which includes
+	// a port. We replace that port with the correct HTTPS port for the API call.
 	host, _, err := net.SplitHostPort(leaderAddr)
 	if err != nil {
 		log.Printf("Invalid leader address format '%s': %v", leaderAddr, err)

@@ -1036,10 +1036,8 @@ func (s *Server) handleCertSync(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case cluster.SyncEndpoint:
 		// This is a follower receiving a manifest from the leader.
-		// We use r.RemoteAddr to get the leader's actual address, as node.Raft.Leader()
-		// might return a Raft-specific address that isn't reachable over HTTPS.
-		leaderAddr := r.RemoteAddr
-		node.HandleSyncRequest(w, r, leaderAddr, apiKey, s.Config.HTTPSPort)
+		// The handler will internally extract the leader's address from the request.
+		node.HandleSyncRequest(w, r, apiKey, s.Config.HTTPSPort)
 	case cluster.FileEndpoint:
 		// This is the leader serving a file to a follower
 		node.HandleFileRequest(w, r)
