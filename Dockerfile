@@ -1,5 +1,5 @@
 # Étape 1: Compilation
-FROM golang:1.21-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 # Définir le répertoire de travail
 WORKDIR /app
@@ -28,6 +28,9 @@ COPY --from=builder /app/titan-web-server .
 
 # Copier le fichier de configuration par défaut
 COPY titan-server.conf .
+
+# Copier le fichier de version
+COPY VERSION .
 
 # Exposer le port HTTP par défaut
 EXPOSE 8080
