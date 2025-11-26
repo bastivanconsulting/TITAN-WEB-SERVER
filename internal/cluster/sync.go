@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,13 +30,13 @@ type FileInfo struct {
 }
 
 // StartCertSync starts the certificate synchronization process if the node is the leader.
-func (n *Node) StartCertSync(apiKey string) {
+func (n *Node) StartCertSync(apiKey string, httpsPort string) {
 	ticker := time.NewTicker(SyncInterval)
 	go func() {
 		for {
 			<-ticker.C
 			if n.Raft.State() == raft.Leader {
-				if err := n.syncCertificates(apiKey); err != nil {
+				if err := n.syncCertificates(apiKey, httpsPort); err != nil {
 					log.Printf("Certificate sync error: %v", err)
 				}
 			}
@@ -43,7 +44,7 @@ func (n *Node) StartCertSync(apiKey string) {
 	}()
 }
 
-func (n *Node) syncCertificates(apiKey string) error {
+func (n *Node) syncCertificates(apiKey string, httpsPort string) error {
 	manifest, err := n.buildManifest()
 	if err != nil {
 		return fmt.Errorf("failed to build manifest: %w", err)
@@ -57,7 +58,7 @@ func (n *Node) syncCertificates(apiKey string) error {
 	leaderID := n.Raft.Leader()
 	for _, server := range configFuture.Configuration().Servers {
 		if server.ID != raft.ServerID(leaderID) {
-			go n.sendManifestToFollower(string(server.Address), manifest, apiKey)
+			go n.sendManifestToFollower(string(server.Address), manifest, apiKey, httpsPort)
 		}
 	}
 
@@ -86,14 +87,24 @@ func (n *Node) buildManifest() ([]FileInfo, error) {
 	return manifest, err
 }
 
-func (n *Node) sendManifestToFollower(addr string, manifest []FileInfo, apiKey string) {
+func (n *Node) sendManifestToFollower(addr string, manifest []FileInfo, apiKey string, httpsPort string) {
 	jsonData, err := json.Marshal(manifest)
 	if err != nil {
 		log.Printf("Failed to marshal manifest for %s: %v", addr, err)
 		return
 	}
 
-	url := fmt.Sprintf("https://%s%s", addr, SyncEndpoint)
+	// The follower's address from Raft includes the Raft port. We need to replace it
+	// with the HTTPS port for the API call.
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		log.Printf("Invalid follower address format '%s': %v", addr, err)
+		return
+	}
+	// Reconstruct with the correct HTTPS port
+	httpsAddr := net.JoinHostPort(host, httpsPort)
+
+	url := fmt.Sprintf("https://%s%s", httpsAddr, SyncEndpoint)
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
 		log.Printf("Failed to create request for %s: %v", addr, err)
@@ -119,7 +130,7 @@ func (n *Node) sendManifestToFollower(addr string, manifest []FileInfo, apiKey s
 }
 
 // HandleSyncRequest is an HTTP handler for followers to receive a manifest.
-func (n *Node) HandleSyncRequest(w http.ResponseWriter, r *http.Request, leaderAddress, apiKey string) {
+func (n *Node) HandleSyncRequest(w http.ResponseWriter, r *http.Request, leaderAddress, apiKey, httpsPort string) {
 	var remoteManifest []FileInfo
 	if err := json.NewDecoder(r.Body).Decode(&remoteManifest); err != nil {
 		http.Error(w, "Invalid manifest", http.StatusBadRequest)
@@ -140,7 +151,7 @@ func (n *Node) HandleSyncRequest(w http.ResponseWriter, r *http.Request, leaderA
 	for _, remoteInfo := range remoteManifest {
 		localInfo, exists := localFiles[remoteInfo.Path]
 		if !exists || localInfo.ModTime.Before(remoteInfo.ModTime) || localInfo.Size != remoteInfo.Size {
-			if err := n.downloadFile(leaderAddress, remoteInfo.Path, apiKey); err != nil {
+			if err := n.downloadFile(leaderAddress, remoteInfo.Path, apiKey, httpsPort); err != nil {
 				log.Printf("Failed to download %s from leader: %v", remoteInfo.Path, err)
 				// Continue trying to sync other files
 			}
@@ -150,8 +161,20 @@ func (n *Node) HandleSyncRequest(w http.ResponseWriter, r *http.Request, leaderA
 	w.WriteHeader(http.StatusOK)
 }
 
-func (n *Node) downloadFile(leaderAddr, path, apiKey string) error {
-	url := fmt.Sprintf("https://%s%s?file=%s", leaderAddr, FileEndpoint, path)
+func (n *Node) downloadFile(leaderAddr, path, apiKey, httpsPort string) error {
+	// The leader's address from Raft includes the Raft port. We need to replace it
+	// with the HTTPS port for the API call.
+	host, _, err := net.SplitHostPort(leaderAddr)
+	if err != nil {
+		log.Printf("Invalid leader address format '%s': %v", leaderAddr, err)
+		// Fallback to using the address as-is, just in case it's already correct.
+		host = leaderAddr
+	}
+
+	// Reconstruct with the correct HTTPS port
+	httpsAddr := net.JoinHostPort(host, httpsPort)
+
+	url := fmt.Sprintf("https://%s%s?file=%s", httpsAddr, FileEndpoint, path)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return err

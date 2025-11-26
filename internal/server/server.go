@@ -1071,7 +1071,7 @@ func (s *Server) handleCertSync(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case cluster.SyncEndpoint:
 		// This is a follower receiving a manifest from the leader
-		node.HandleSyncRequest(w, r, leaderAddr, apiKey)
+		node.HandleSyncRequest(w, r, leaderAddr, apiKey, s.Config.HTTPSPort)
 	case cluster.FileEndpoint:
 		// This is the leader serving a file to a follower
 		node.HandleFileRequest(w, r)
