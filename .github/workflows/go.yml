@@ -51,6 +51,7 @@ jobs:
 
       - name: Get Version
         id: get_version
+        shell: bash
         run: |
           if [[ $GITHUB_REF == refs/tags/* ]]; then
             TAG_NAME=${GITHUB_REF#refs/tags/}
