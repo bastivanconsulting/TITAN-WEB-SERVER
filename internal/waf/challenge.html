@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Checking your browser...</title>
+    <style>
+        body { font-family: sans-serif; margin: 0; padding: 0; display: flex; justify-content: center; align-items: center; height: 100vh; background-color: #f0f0f0; }
+        .container { text-align: center; }
+        .spinner { border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 40px; height: 40px; animation: spin 2s linear infinite; margin: 20px auto; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Verifying you are human...</h1>
+        <p>This process is automatic. Your browser will redirect shortly.</p>
+        <div class="spinner"></div>
+    </div>
+    <script>
+        (function() {
+            // Simple challenge: Perform a calculation. A real challenge would be more complex.
+            var a = 5;
+            var b = 10;
+            var result = a + b; // This is trivial, a real one might involve crypto or canvas fingerprinting.
+
+            if (result === 15) {
+                // Set a cookie on the client side
+                var d = new Date();
+                d.setTime(d.getTime() + (1*60*60*1000)); // 1 hour expiration
+                var expires = "expires="+ d.toUTCString();
+                document.cookie = "__titan_js_validation=passed;path=/;" + expires;
+
+                // Reload the page, the server will now see the cookie
+                window.location.reload();
+            } else {
+                // Should not happen with this simple challenge
+                alert("JS Challenge Failed!");
+            }
+        })();
+    </script>
+</body>
+</html>

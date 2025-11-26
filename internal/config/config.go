@@ -65,24 +65,30 @@ type Cache struct {
 
 // Site represents a virtual host
 type Site struct {
-	Domain string  `json:"domain"`
-	Routes []Route `json:"routes"`
-	SSL    *SSL    `json:"ssl,omitempty"`
-	WAF    *WAF    `json:"waf,omitempty"`
+	Domain string      `json:"domain"`
+	Routes []Route     `json:"routes"`
+	SSL    *SSL        `json:"ssl,omitempty"`
+	WAF    *WAFConfig  `json:"waf,omitempty"`
 }
 
-// WAF represents the Web Application Firewall configuration for a site
-type WAF struct {
-	Enabled         bool     `json:"enabled"`
-	UnderAttackMode bool     `json:"under_attack_mode"`
-	RateLimit       int      `json:"rate_limit"`       // Requests per minute per IP
-	AllowList       []string `json:"allow_list"`       // IP whitelist
-	DenyList        []string `json:"deny_list"`        // IP blacklist
-	DenyCountries   []string `json:"deny_countries"`   // Block traffic from these country codes (ISO 3166-1 alpha-2)
-	CheckSQLi       bool     `json:"check_sqli"`
-	CheckXSS        bool     `json:"check_xss"`
-	CheckLFI        bool     `json:"check_lfi"`
-	CheckUA         bool     `json:"check_ua"`
+// WAFConfig represents the Web Application Firewall configuration for a site
+type WAFConfig struct {
+	Enabled         bool               `json:"enabled"`
+	UnderAttackMode bool               `json:"under_attack_mode"`
+	RateLimit       int                `json:"rate_limit"`       // Requests per minute per IP
+	AllowList       []string           `json:"allow_list"`       // IP whitelist
+	DenyList        []string           `json:"deny_list"`        // IP blacklist
+	DenyCountries   []string           `json:"deny_countries"`   // Block traffic from these country codes (ISO 3166-1 alpha-2)
+	CheckSQLi       bool               `json:"check_sqli"`
+	CheckXSS        bool               `json:"check_xss"`
+	CheckLFI        bool               `json:"check_lfi"`
+	CheckUA         bool               `json:"check_ua"`
+	JSChallenge     *JSChallengeConfig `json:"js_challenge,omitempty"`
+}
+
+// JSChallengeConfig represents the JS Challenge configuration
+type JSChallengeConfig struct {
+	Enabled bool `json:"enabled"`
 }
 
 // SSL represents SSL configuration
@@ -106,11 +112,12 @@ type HSTSConfig struct {
 
 // Route represents a path rule
 type Route struct {
-	Path        string   `json:"path"`                  // e.g., "/" or "/api"
-	Type        string   `json:"type"`                  // "proxy" or "static"
-	ProxyTarget string   `json:"proxy_target,omitempty"`// Single target (legacy/simple)
-	Upstreams   []string `json:"upstreams,omitempty"`   // Load balancing targets
-	FileRoot    string   `json:"file_root"`             // e.g., "/var/www/html"
+	Path        string     `json:"path"`                  // e.g., "/" or "/api"
+	Type        string     `json:"type"`                  // "proxy" or "static"
+	ProxyTarget string     `json:"proxy_target,omitempty"`// Single target (legacy/simple)
+	Upstreams   []string   `json:"upstreams,omitempty"`   // Load balancing targets
+	FileRoot    string     `json:"file_root"`             // e.g., "/var/www/html"
+	WAF         *WAFConfig `json:"waf,omitempty"`
 }
 
 // LoadConfig loads configuration from a .conf file and optional include directory
