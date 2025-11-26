@@ -25,18 +25,8 @@ func DecodeAST(ast *parser.ConfigAST) (*Config, error) {
 				}
 				cfg.MaxThreads = val
 			}
-		case "admin_api_key":
-			if len(d.Parameters) > 0 { cfg.AdminAPIKey = d.Parameters[0] }
-		case "admin_user":
-			if len(d.Parameters) > 0 { cfg.AdminUser = d.Parameters[0] }
-		case "admin_pass":
-			if len(d.Parameters) > 0 { cfg.AdminPass = d.Parameters[0] }
-		case "admin_allowlist":
-			cfg.AdminAllowlist = d.Parameters
 		case "log_dir":
 			if len(d.Parameters) > 0 { cfg.LogDir = d.Parameters[0] }
-		case "conf_dir":
-			if len(d.Parameters) > 0 { cfg.ConfDir = d.Parameters[0] }
 		case "geoip_db_path":
 			if len(d.Parameters) > 0 { cfg.GeoIPDBPath = d.Parameters[0] }
 		case "include":
@@ -94,6 +84,10 @@ func decodeSiteBlock(b parser.Block) (*Site, error) {
 			// Let's assume server_name is domain.
 		case "server_name":
 			if len(d.Parameters) > 0 { site.Domain = d.Parameters[0] }
+		case "js_module":
+			if len(d.Parameters) > 0 { site.JSModule = d.Parameters[0] }
+		case "gzip":
+			if len(d.Parameters) > 0 { site.Gzip = d.Parameters[0] == "on" }
 		}
 	}
 
@@ -121,6 +115,29 @@ func decodeSiteBlock(b parser.Block) (*Site, error) {
 				case "upstream":
 					// This should probably be defined outside location, but if inside, handle it
 					route.Upstreams = d.Parameters
+				case "js_module":
+					if len(d.Parameters) > 0 {
+						route.JSModule = d.Parameters[0]
+					}
+				case "auth_basic":
+					if len(d.Parameters) > 0 {
+						route.AuthBasic = d.Parameters[0]
+					}
+				case "auth_basic_user_file":
+					if len(d.Parameters) > 0 {
+						route.AuthBasicUserFile = d.Parameters[0]
+					}
+				case "proxy_ssl_verify":
+					if len(d.Parameters) > 0 {
+						route.ProxySSLVerify = d.Parameters[0] == "on"
+					}
+				case "limit_rate":
+					if len(d.Parameters) > 0 {
+						rate, err := strconv.Atoi(d.Parameters[0])
+						if err == nil {
+							route.LimitRate = rate
+						}
+					}
 				}
 			}
 
@@ -146,10 +163,10 @@ func decodeSiteBlock(b parser.Block) (*Site, error) {
 					site.SSL.Enabled = d.Parameters[0] == "on"
 				case "email":
 					site.SSL.Email = d.Parameters[0]
-				case "cert_file":
-					site.SSL.CertFile = d.Parameters[0]
-				case "key_file":
-					site.SSL.KeyFile = d.Parameters[0]
+				case "ssl_certificate":
+					site.SSL.Certificate = d.Parameters[0]
+				case "ssl_certificate_key":
+					site.SSL.CertificateKey = d.Parameters[0]
 				case "provider":
 					site.SSL.Provider = d.Parameters[0]
 				case "ocsp_stapling":
@@ -223,6 +240,12 @@ func decodeWAFBlock(b parser.Block) (*WAFConfig, error) {
 			waf.CheckLFI = d.Parameters[0] == "on"
 		case "check_ua":
 			waf.CheckUA = d.Parameters[0] == "on"
+		case "waf_wp":
+			waf.ProtectWP = d.Parameters[0] == "on"
+		case "waf_joomla":
+			waf.ProtectJoomla = d.Parameters[0] == "on"
+		case "waf_php":
+			waf.ProtectPHP = d.Parameters[0] == "on"
 		}
 	}
 

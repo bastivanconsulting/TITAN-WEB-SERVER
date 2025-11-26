@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -36,10 +37,11 @@ type ErrorHandlerFunc func(w http.ResponseWriter, r *http.Request, err error)
 
 // ProxyOptions configures the proxy
 type ProxyOptions struct {
-	Targets      []string
-	ErrorHandler ErrorHandlerFunc
-	Cache        cache.Cache
-	CacheTTL     time.Duration
+	Targets        []string
+	ErrorHandler   ErrorHandlerFunc
+	Cache          cache.Cache
+	CacheTTL       time.Duration
+	ProxySSLVerify bool
 }
 
 // limitRecorder captures the response status code, headers and body up to a limit
@@ -100,6 +102,12 @@ func NewProxyHandler(opts ProxyOptions) (http.Handler, error) {
 
 		proxy := httputil.NewSingleHostReverseProxy(targetURL)
 
+		if opts.ProxySSLVerify == false {
+			proxy.Transport = &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			}
+		}
+
 		// Custom Director modification
 		originalDirector := proxy.Director
 		proxy.Director = func(req *http.Request) {
@@ -114,64 +122,12 @@ func NewProxyHandler(opts ProxyOptions) (http.Handler, error) {
 			}
 		}
 
-		// Inject script into HTML responses
+		// Modify response
 		proxy.ModifyResponse = func(resp *http.Response) error {
-			// Check if the content type is HTML
-			contentType := resp.Header.Get("Content-Type")
-			if !strings.Contains(contentType, "text/html") {
-				return nil
-			}
+			// Remove identifying headers
+			resp.Header.Del("Server")
+			resp.Header.Del("X-Powered-By")
 
-			// Read the original body
-			bodyBytes, err := io.ReadAll(resp.Body)
-			if err != nil {
-				return err
-			}
-			resp.Body.Close()
-
-			// Decompress if gzipped
-			wasGzipped := false
-			if resp.Header.Get("Content-Encoding") == "gzip" {
-				wasGzipped = true
-				gz, err := gzip.NewReader(bytes.NewReader(bodyBytes))
-				if err != nil {
-					return err
-				}
-				bodyBytes, err = io.ReadAll(gz)
-				gz.Close()
-				if err != nil {
-					return err
-				}
-				resp.Header.Del("Content-Encoding")
-			}
-
-			// Inject the script
-			newBody := injectBefore(bodyBytes, []byte("</head>"), []byte(injectionScript))
-
-			// Re-compress if necessary
-			if wasGzipped {
-				var b bytes.Buffer
-				gz := gzip.NewWriter(&b)
-				if _, err := gz.Write(newBody); err != nil {
-					return err
-				}
-				if err := gz.Close(); err != nil {
-					return err
-				}
-				newBody = b.Bytes()
-				resp.Header.Set("Content-Encoding", "gzip")
-			}
-
-			// Update the response body
-			resp.Body = io.NopCloser(bytes.NewReader(newBody))
-			resp.Header.Set("Content-Length", strconv.Itoa(len(newBody)))
-			resp.ContentLength = int64(len(newBody))
-
-			return nil
-		}
-
-		// Inject script into HTML responses
-		proxy.ModifyResponse = func(resp *http.Response) error {
 			// Check if the content type is HTML
 			contentType := resp.Header.Get("Content-Type")
 			if !strings.Contains(contentType, "text/html") {
@@ -254,8 +210,8 @@ func NewProxyHandler(opts ProxyOptions) (http.Handler, error) {
 			return
 		}
 
-		// Only cache GET requests
-		if r.Method != http.MethodGet {
+		// Only cache GET requests, and skip caching for Range requests
+		if r.Method != http.MethodGet || r.Header.Get("Range") != "" {
 			proxyHandler.ServeHTTP(w, r)
 			return
 		}

@@ -219,6 +219,37 @@ func (w *WAF) isMalicious(r *http.Request, wafConfig *config.WAFConfig) (string,
 		}
 	}
 
+	// WordPress Protection
+	if wafConfig.ProtectWP {
+		for _, pattern := range wpPatterns {
+			if strings.Contains(r.URL.Path, pattern) {
+				return "WP_PROBE", fmt.Sprintf("Access to sensitive WordPress path: %s", r.URL.Path), true
+			}
+		}
+	}
+
+	// Joomla Protection
+	if wafConfig.ProtectJoomla {
+		for _, pattern := range joomlaPatterns {
+			if strings.Contains(r.URL.Path, pattern) {
+				return "JOOMLA_PROBE", fmt.Sprintf("Access to sensitive Joomla path: %s", r.URL.Path), true
+			}
+		}
+	}
+
+	// Generic PHP Protection
+	if wafConfig.ProtectPHP {
+		for key, values := range r.URL.Query() {
+			for _, value := range values {
+				for _, pattern := range phpPatterns {
+					if strings.Contains(value, pattern) {
+						return "PHP_INJECTION", fmt.Sprintf("Potential PHP injection in query param '%s': %s", key, value), true
+					}
+				}
+			}
+		}
+	}
+
 	return "", "", false
 }
 
@@ -260,6 +291,21 @@ var lfiPatterns = []string{
 // Basic User-Agent blacklist
 var uaBlacklist = []string{
 	"sqlmap", "nikto", "nmap", "wpscan", "masscan", "zgrab", "hydra", "curl/7", "wget/1",
+}
+
+// WordPress protection rules
+var wpPatterns = []string{
+	"/wp-admin/", "/wp-login.php", "/xmlrpc.php",
+}
+
+// Joomla protection rules
+var joomlaPatterns = []string{
+	"/administrator/", "/index.php?option=com_users",
+}
+
+// Generic PHP protection rules
+var phpPatterns = []string{
+	"eval(", "base64_decode(", "gzinflate(", "shell_exec(", "passthru(",
 }
 
 func detectSQLi(input string) bool {

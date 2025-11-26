@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{{.Code}} {{.Title}}</title>
+    <style>
+        body { font-family: sans-serif; text-align: center; padding: 50px; background-color: #f2f2f2; }
+        h1 { font-size: 3em; color: #d9534f; }
+        p { font-size: 1.2em; }
+        footer { margin-top: 50px; font-size: 0.8em; color: #888; }
+    </style>
+</head>
+<body>
+    <h1>Erreur {{.Code}}</h1>
+    <p>Une erreur interne du serveur s'est produite.</p>
+    <p>Ray ID: {{.RayID}}</p>
+    <footer>TITAN WEB SERVER</footer>
+</body>
+</html>
