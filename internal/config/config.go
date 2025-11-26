@@ -65,6 +65,7 @@ type Site struct {
 	SSL      *SSL
 	WAF      *WAFConfig
 	JSModule string
+	Gzip     bool
 }
 
 // WAFConfig represents the Web Application Firewall configuration for a site
@@ -80,6 +81,9 @@ type WAFConfig struct {
 	CheckLFI        bool
 	CheckUA         bool
 	JSChallenge     *JSChallengeConfig
+	ProtectWP       bool
+	ProtectJoomla   bool
+	ProtectPHP      bool
 }
 
 // JSChallengeConfig represents the JS Challenge configuration

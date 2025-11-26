@@ -524,6 +524,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		finalHandler = siteWAF.Middleware(finalHandler)
 	}
 
+	if matchedSite.Gzip {
+		finalHandler = GzipMiddleware(finalHandler)
+	}
+
 	finalHandler.ServeHTTP(rw, r)
 }
 

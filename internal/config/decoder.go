@@ -86,6 +86,8 @@ func decodeSiteBlock(b parser.Block) (*Site, error) {
 			if len(d.Parameters) > 0 { site.Domain = d.Parameters[0] }
 		case "js_module":
 			if len(d.Parameters) > 0 { site.JSModule = d.Parameters[0] }
+		case "gzip":
+			if len(d.Parameters) > 0 { site.Gzip = d.Parameters[0] == "on" }
 		}
 	}
 
@@ -238,6 +240,12 @@ func decodeWAFBlock(b parser.Block) (*WAFConfig, error) {
 			waf.CheckLFI = d.Parameters[0] == "on"
 		case "check_ua":
 			waf.CheckUA = d.Parameters[0] == "on"
+		case "waf_wp":
+			waf.ProtectWP = d.Parameters[0] == "on"
+		case "waf_joomla":
+			waf.ProtectJoomla = d.Parameters[0] == "on"
+		case "waf_php":
+			waf.ProtectPHP = d.Parameters[0] == "on"
 		}
 	}
 

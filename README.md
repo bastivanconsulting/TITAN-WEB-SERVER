@@ -114,6 +114,43 @@ Titan prend en charge un sous-ensemble des directives des fichiers `.htaccess` p
 
 ---
 
+## 🛡️ WAF (Web Application Firewall)
+
+Le WAF protège vos applications contre les attaques courantes.
+
+### Directives du WAF
+
+*   `waf on|off;`
+*   `waf_wp on|off;` (Protection WordPress)
+*   `waf_joomla on|off;` (Protection Joomla)
+*   `waf_php on|off;` (Protection PHP)
+
+---
+
+## ⚡️ Performance
+
+### Compression GZIP
+
+Activez la compression GZIP pour réduire la taille des réponses.
+
+*   **Syntaxe** : `gzip on|off;`
+*   **Contexte** : `server`
+
+### Mise en Cache
+
+Titan prend en charge la mise en cache en mémoire et sur disque.
+
+*   **Syntaxe** :
+    ```nginx
+    cache {
+        type memory|disk;
+        path /chemin/vers/le/cache;
+    }
+    ```
+*   **Contexte** : `http`
+
+---
+
 ## 📖 Directives de Location
 
 ### `auth_basic`
