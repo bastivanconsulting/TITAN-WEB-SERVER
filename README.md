@@ -219,6 +219,36 @@ location /api/ {
 
 ---
 
+## 🚀 Déploiement
+
+Déployez Titan Web Server en utilisant Docker ou Kubernetes.
+
+### Docker
+
+1.  **Construire l'image Docker** :
+    ```bash
+    docker build -t titan-web-server:latest .
+    ```
+
+2.  **Exécuter le conteneur** :
+    ```bash
+    docker run -p 8080:8080 titan-web-server:latest
+    ```
+
+### Kubernetes / K3s
+
+1.  **Appliquer les manifestes** :
+    ```bash
+    kubectl apply -f k8s/
+    ```
+
+2.  **Vérifier le déploiement** :
+    ```bash
+    kubectl get all
+    ```
+
+---
+
 ## 🤝 Contribuer
 
 Les contributions sont les bienvenues !

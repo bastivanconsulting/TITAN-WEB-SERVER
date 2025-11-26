@@ -357,11 +357,30 @@ func (s *Server) renderError(w http.ResponseWriter, r *http.Request, code int, t
 	s.Tpl.ExecuteTemplate(w, templateName, data)
 }
 
+// isContainerized checks if the server is running inside a Docker or Kubernetes environment.
+func isContainerized() bool {
+	// Check for Docker environment
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+
+	// Check for Kubernetes environment
+	if os.Getenv("KUBERNETES_SERVICE_HOST") != "" {
+		return true
+	}
+
+	return false
+}
+
 // ServeHTTP implements the http.Handler interface
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	// Add global Server header
-	w.Header().Set("Server", "Titan Web Server")
+	if isContainerized() {
+		w.Header().Set("Server", "Titan Web Container")
+	} else {
+		w.Header().Set("Server", "Titan Web Server")
+	}
 
 	// Capture status code for logging
 	rw := NewResponseWriter(w)
