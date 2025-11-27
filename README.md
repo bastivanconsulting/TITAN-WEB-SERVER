@@ -51,13 +51,6 @@ https_port :8443;
 # Logs
 log_dir "/var/log/titan/";
 
-# Chemin pour les certificats SSL
-# Spécifie le répertoire où les certificats auto-signés et les fichiers ACME
-# (clé de compte, certificats) seront stockés.
-# Assurez-vous que l'utilisateur exécutant Titan a les permissions d'écriture.
-# Défaut : /etc/titan/
-# ssl_path "/var/lib/titan/ssl/";
-
 # Sécurité Globale
 security {
     fips_compliant on;
@@ -80,72 +73,8 @@ server {
 
 ## 🔒 Configuration SSL
 
-Titan prend en charge SSL/TLS via la configuration manuelle des certificats.
-
-### Certificats Manuels
-
-```nginx
-server {
-    server_name www.example.com;
-
-    # SSL est implicitement activé si les directives de certificat sont présentes
-    ssl_certificate /chemin/vers/votre/certificat.pem;
-    ssl_certificate_key /chemin/vers/votre/cle.pem;
-
-    location / {
-        root /var/www/html;
-    }
-}
-```
-
-### Utilisation de Certbot pour les certificats SSL
-
-Titan ne gère plus l'obtention automatique de certificats SSL. Nous vous recommandons d'utiliser un client ACME externe comme **Certbot** pour obtenir et renouveler vos certificats Let's Encrypt.
-
-**Étapes générales :**
-
-1.  **Installer Certbot** : Suivez les instructions sur le [site officiel de Certbot](https://certbot.eff.org/).
-
-2.  **Obtenir un certificat** :
-    ```bash
-    # Utilisez le mode "standalone" si aucun autre service n'écoute sur le port 80
-    sudo certbot certonly --standalone -d www.example.com
-
-    # Ou utilisez le mode "webroot" si Titan est déjà en cours d'exécution
-    sudo certbot certonly --webroot -w /var/www/html -d www.example.com
-    ```
-
-3.  **Configurer Titan** : Une fois le certificat obtenu (généralement dans `/etc/letsencrypt/live/`), configurez votre site dans Titan :
-    ```nginx
-    server {
-        server_name www.example.com;
-
-        ssl_certificate /etc/letsencrypt/live/www.example.com/fullchain.pem;
-        ssl_certificate_key /etc/letsencrypt/live/www.example.com/privkey.pem;
-
-        location / {
-            root /var/www/html;
-        }
-    }
-    ```
-
-4.  **Renouvellement automatique** : Le paquet Certbot configure généralement une tâche cron ou un timer systemd pour renouveler automatiquement les certificats.
-
-### Exemple de configuration SSL
-
-```nginx
-server {
-    server_name www.example.com;
-    listen 443 ssl;
-
-    ssl_certificate /chemin/vers/votre/certificat.pem;
-    ssl_certificate_key /chemin/vers/votre/cle.pem;
-
-    location / {
-        root /var/www/html;
-    }
-}
-```
+Titan prend en charge SSL/TLS sans modifier le fichier de configuration.
+Dossier /etc/titan/certs/manual/
 
 ### Redirection HTTPS Automatique
 
