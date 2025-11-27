@@ -5,20 +5,20 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"titan-web-server/internal/config"
 	"time"
 
 	"github.com/go-acme/lego/v4/certificate"
 	"github.com/go-acme/lego/v4/certcrypto"
-	"github.com/go-acme/lego/v4/challenge/http01"
+	"github.com/go-acme/lego/v4/challenge/tlsalpn01"
 	"github.com/go-acme/lego/v4/lego"
 	"github.com/go-acme/lego/v4/registration"
 
@@ -27,34 +27,46 @@ import (
 	"errors"
 )
 
-// httpChallengeProvider implements the challenge.Provider interface.
-type httpChallengeProvider struct {
-	mu         sync.Mutex
-	challenges map[string]string
+// tlsALPNChallengeProvider implements the challenge.Provider interface for TLS-ALPN-01.
+type tlsALPNChallengeProvider struct {
+	mu    sync.Mutex
+	certs map[string]*tls.Certificate
 }
 
-func newHTTPChallengeProvider() *httpChallengeProvider {
-	return &httpChallengeProvider{
-		challenges: make(map[string]string),
+func newTLSALPNChallengeProvider() *tlsALPNChallengeProvider {
+	return &tlsALPNChallengeProvider{
+		certs: make(map[string]*tls.Certificate),
 	}
 }
 
-// Present makes the key authorization available for the ACME server.
-func (p *httpChallengeProvider) Present(domain, token, keyAuth string) error {
+// Present generates and stores a challenge certificate.
+func (p *tlsALPNChallengeProvider) Present(domain, token, keyAuth string) error {
+	cert, err := tlsalpn01.ChallengeCert(domain, keyAuth)
+	if err != nil {
+		return err
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.challenges[token] = keyAuth
-	log.Printf("ACME: Presented challenge for domain %s, token %s", domain, token)
+	p.certs[domain] = cert
+	log.Printf("ACME: Presented TLS-ALPN challenge for domain %s", domain)
 	return nil
 }
 
-// CleanUp removes the key authorization.
-func (p *httpChallengeProvider) CleanUp(domain, token, keyAuth string) error {
+// CleanUp removes a challenge certificate.
+func (p *tlsALPNChallengeProvider) CleanUp(domain, token, keyAuth string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	delete(p.challenges, token)
-	log.Printf("ACME: Cleaned up challenge for domain %s, token %s", domain, token)
+	delete(p.certs, domain)
+	log.Printf("ACME: Cleaned up TLS-ALPN challenge for domain %s", domain)
 	return nil
+}
+
+// GetCertificate returns the challenge certificate for a given domain.
+func (p *tlsALPNChallengeProvider) GetCertificate(domain string) (*tls.Certificate, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	cert, ok := p.certs[domain]
+	return cert, ok
 }
 
 // User represents a Let's Encrypt user account.
@@ -76,12 +88,20 @@ func (u *User) GetPrivateKey() crypto.PrivateKey {
 
 // ACMEManager handles the lifecycle of ACME certificates.
 type ACMEManager struct {
-	config          *config.Config
-	client          *lego.Client
-	user            *User
-	challengeProvider *httpChallengeProvider
-	ticker          *time.Ticker
-	quit            chan struct{}
+	config            *config.Config
+	client            *lego.Client
+	user              *User
+	challengeProvider *tlsALPNChallengeProvider
+	ticker            *time.Ticker
+	quit              chan struct{}
+}
+
+// GetChallengeCertificate is used by the server to get the cert for a TLS hello.
+func (m *ACMEManager) GetChallengeCertificate(domain string) (*tls.Certificate, bool) {
+	if m.challengeProvider == nil {
+		return nil, false
+	}
+	return m.challengeProvider.GetCertificate(domain)
 }
 
 // NewManager creates a new ACMEManager.
@@ -153,8 +173,8 @@ func NewManager(cfg *config.Config) (*ACMEManager, error) {
 		return nil, err
 	}
 
-	challengeProvider := newHTTPChallengeProvider()
-	err = client.Challenge.SetHTTP01Provider(challengeProvider)
+	challengeProvider := newTLSALPNChallengeProvider()
+	err = client.Challenge.SetTLSALPN01Provider(challengeProvider)
 	if err != nil {
 		return nil, err
 	}
@@ -166,9 +186,9 @@ func NewManager(cfg *config.Config) (*ACMEManager, error) {
 	user.Registration = reg
 
 	return &ACMEManager{
-		config:          cfg,
-		client:          client,
-		user:            user,
+		config:            cfg,
+		client:            client,
+		user:              user,
 		challengeProvider: challengeProvider,
 	}, nil
 }
@@ -234,25 +254,6 @@ func (m *ACMEManager) CheckDomainsAndProvision() {
 			}
 		}
 	}
-}
-
-// HandleChallenge handles an incoming HTTP request to solve an ACME challenge.
-// It returns true if the request was handled, otherwise false.
-func (m *ACMEManager) HandleChallenge(w http.ResponseWriter, r *http.Request) bool {
-	if strings.HasPrefix(r.URL.Path, http01.ChallengePath("")) {
-		token := filepath.Base(r.URL.Path)
-		m.challengeProvider.mu.Lock()
-		keyAuth, ok := m.challengeProvider.challenges[token]
-		m.challengeProvider.mu.Unlock()
-
-		if ok {
-			log.Printf("ACME: Responding to challenge for token %s", token)
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(keyAuth))
-			return true
-		}
-	}
-	return false
 }
 
 func (m *ACMEManager) provisionCertificate(domain string) error {
