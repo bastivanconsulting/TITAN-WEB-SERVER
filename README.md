@@ -98,40 +98,38 @@ server {
 }
 ```
 
-### Let's Encrypt (ACME)
+### Utilisation de Certbot pour les certificats SSL
 
-Titan peut automatiquement obtenir et renouveler des certificats SSL auprès de Let's Encrypt.
+Titan ne gère plus l'obtention automatique de certificats SSL. Nous vous recommandons d'utiliser un client ACME externe comme **Certbot** pour obtenir et renouveler vos certificats Let's Encrypt.
 
-**Prérequis :**
-*   Le nom de domaine de votre site doit pointer vers l'adresse IP publique de votre serveur.
-*   Le port 80 doit être accessible publiquement sur votre serveur pour la validation HTTP-01.
+**Étapes générales :**
 
-**Configuration :**
+1.  **Installer Certbot** : Suivez les instructions sur le [site officiel de Certbot](https://certbot.eff.org/).
 
-1.  **Configurer le bloc `acme` global dans `titan-server.conf` :**
-    ```nginx
-    acme {
-        enabled on;
-        email "votre-email@example.com"; # Recommandé
-        # directory_url "https://acme-staging-v02.api.letsencrypt.org/directory"; # Pour les tests
-    }
+2.  **Obtenir un certificat** :
+    ```bash
+    # Utilisez le mode "standalone" si aucun autre service n'écoute sur le port 80
+    sudo certbot certonly --standalone -d www.example.com
+
+    # Ou utilisez le mode "webroot" si Titan est déjà en cours d'exécution
+    sudo certbot certonly --webroot -w /var/www/html -d www.example.com
     ```
-    Si aucun email n'est fourni, un email par défaut sera utilisé et un avertissement sera affiché.
 
-2.  **Configurer un site pour utiliser ACME :**
+3.  **Configurer Titan** : Une fois le certificat obtenu (généralement dans `/etc/letsencrypt/live/`), configurez votre site dans Titan :
     ```nginx
     server {
         server_name www.example.com;
 
-        ssl {
-            provider acme;
-        }
+        ssl_certificate /etc/letsencrypt/live/www.example.com/fullchain.pem;
+        ssl_certificate_key /etc/letsencrypt/live/www.example.com/privkey.pem;
 
         location / {
             root /var/www/html;
         }
     }
     ```
+
+4.  **Renouvellement automatique** : Le paquet Certbot configure généralement une tâche cron ou un timer systemd pour renouveler automatiquement les certificats.
 
 ### Exemple de configuration SSL
 

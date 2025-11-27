@@ -52,14 +52,6 @@ func DecodeAST(ast *parser.ConfigAST) (*Config, error) {
 				if d.Name == "type" { cfg.Cache.Type = d.Parameters[0] }
 				if d.Name == "path" { cfg.Cache.Path = d.Parameters[0] }
 			}
-		case "acme":
-			cfg.ACME = &ACME{}
-			for _, d := range b.Directives {
-				if d.Name == "enabled" { cfg.ACME.Enabled = d.Parameters[0] == "on" }
-				if d.Name == "email" { cfg.ACME.Email = d.Parameters[0] }
-				if d.Name == "directory_url" { cfg.ACME.DirectoryURL = d.Parameters[0] }
-				if d.Name == "cert_path" { cfg.ACME.CertPath = d.Parameters[0] }
-			}
 		case "server":
 			site, err := decodeSiteBlock(b)
 			if err != nil {

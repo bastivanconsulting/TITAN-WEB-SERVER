@@ -21,15 +21,6 @@ type Config struct {
 	Security    *GlobalSecurity
 	Sites       []Site
 	ManualCerts map[string]*tls.Certificate
-	ACME        *ACME
-}
-
-// ACME represents the ACME configuration
-type ACME struct {
-	Enabled      bool
-	DirectoryURL string
-	Email        string
-	CertPath     string
 }
 
 // Validate checks the configuration for errors
