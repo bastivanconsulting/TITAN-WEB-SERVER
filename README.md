@@ -98,41 +98,6 @@ server {
 }
 ```
 
-### Let's Encrypt (ACME)
-
-Titan peut automatiquement obtenir et renouveler des certificats SSL auprès de Let's Encrypt.
-
-**Prérequis :**
-*   Le nom de domaine de votre site doit pointer vers l'adresse IP publique de votre serveur.
-*   Le port 80 doit être accessible publiquement sur votre serveur pour la validation HTTP-01.
-
-**Configuration :**
-
-1.  **Configurer le bloc `acme` global dans `titan-server.conf` :**
-    ```nginx
-    acme {
-        enabled on;
-        email "votre-email@example.com"; # Recommandé
-        # directory_url "https://acme-staging-v02.api.letsencrypt.org/directory"; # Pour les tests
-    }
-    ```
-    Si aucun email n'est fourni, un email par défaut sera utilisé et un avertissement sera affiché.
-
-2.  **Configurer un site pour utiliser ACME :**
-    ```nginx
-    server {
-        server_name www.example.com;
-
-        ssl {
-            provider acme;
-        }
-
-        location / {
-            root /var/www/html;
-        }
-    }
-    ```
-
 ### Exemple de configuration SSL
 
 ```nginx

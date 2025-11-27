@@ -25,7 +25,6 @@ import (
 	"github.com/quic-go/quic-go/http3"
 	"github.com/yookoala/gofast"
 
-	"titan-web-server/internal/acme"
 	"titan-web-server/internal/auth"
 	"titan-web-server/internal/cache"
 	"titan-web-server/internal/cluster"
@@ -43,18 +42,6 @@ func (s *Server) debugLog(format string, v ...interface{}) {
 	}
 }
 
-// acmeHealthCheckWrapper wraps an http.Handler to add a diagnostic endpoint
-// for the ACME challenge. This must be wrapped *before* the autocert handler.
-func acmeHealthCheckWrapper(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/.well-known/acme-challenge/healthz" {
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("OK"))
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
 
 //go:embed templates/error_4xx.html templates/error_5xx.html
 var templateFS embed.FS
@@ -82,7 +69,6 @@ type Server struct {
 	Cache         cache.Cache
 	Logger        *Logger
 	Debug         bool
-	acmeManager   *acme.ACMEManager
 	ClusterNode   *cluster.Node // Optional cluster node
 	phpHandlers   map[string]http.Handler
 	proxyHandlers map[string]http.Handler
@@ -108,9 +94,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := context.WithValue(r.Context(), requestIDKey, requestID)
 	r = r.WithContext(ctx)
 
-	if s.acmeManager != nil && s.acmeManager.HandleChallenge(w, r) {
-		return
-	}
 	// Add global Server header
 	if isContainerized() {
 		w.Header().Set("Server", "Titan Web Container")
@@ -120,13 +103,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Capture status code for logging
 	rw := NewResponseWriter(w)
-
-	// ACME Health Check for diagnostics
-	if r.URL.Path == "/.well-known/acme-challenge/healthz" {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
-		return
-	}
 
 	// HTTPS Redirect
 	if r.TLS == nil {
@@ -329,16 +305,6 @@ func NewServer(cfg *config.Config, configPath string, debug bool) *Server {
 		fmt.Printf("Warning: Failed to create log directory: %v\n", err)
 	}
 
-	var acmeManager *acme.ACMEManager
-	if cfg.ACME != nil && cfg.ACME.Enabled {
-		var err error
-		acmeManager, err = acme.NewManager(cfg)
-		if err != nil {
-			// Log the error but continue, as ACME might not be critical.
-			fmt.Printf("Warning: Could not initialize ACME manager: %v\n", err)
-		}
-	}
-
 	srv := &Server{
 		Config:        cfg,
 		ConfigPath:    configPath,
@@ -346,7 +312,6 @@ func NewServer(cfg *config.Config, configPath string, debug bool) *Server {
 		Cache:         c,
 		Logger:        logger,
 		Debug:         debug,
-		acmeManager:   acmeManager,
 		phpHandlers:   make(map[string]http.Handler),
 		proxyHandlers: make(map[string]http.Handler),
 		wafInstances:  make(map[string]*waf.WAF),
@@ -689,12 +654,7 @@ func (s *Server) Start() error {
 	// Error channel to catch failures from goroutines
 	errChan := make(chan error)
 
-	if s.acmeManager != nil {
-		s.acmeManager.CheckDomainsAndProvision()
-		s.acmeManager.Start()
-	}
-
-	// Build certificate map for SNI and prepare ACME
+	// Build certificate map for SNI
 	certMap := make(map[string]*tls.Certificate)
 	ocspManager := NewOCSPManager()
 	hasOCSP := false
@@ -761,24 +721,8 @@ func (s *Server) Start() error {
 	if s.Config.HTTPPort != "" {
 		go func() {
 			log.Printf("Starting HTTP server on %s\n", s.Config.HTTPPort)
-			// Always wrap with health check
-			finalHandler := acmeHealthCheckWrapper(s)
-			if err := http.ListenAndServe(s.Config.HTTPPort, finalHandler); err != nil {
+			if err := http.ListenAndServe(s.Config.HTTPPort, s); err != nil {
 				errChan <- fmt.Errorf("HTTP server on %s failed: %w", s.Config.HTTPPort, err)
-			}
-		}()
-	}
-
-	// If ACME is enabled and no server is running on port 80 (either because HTTP is disabled
-	// or on another port), start a dedicated listener for the challenge.
-	httpPort80Configured := s.Config.HTTPPort == ":80" || s.Config.HTTPPort == "80"
-	if s.acmeManager != nil && !httpPort80Configured {
-		go func() {
-			log.Println("Starting dedicated ACME challenge server on :80")
-			// Pass 's' (the main server mux) to handle the challenge
-			err := http.ListenAndServe(":80", s)
-			if err != nil {
-				log.Printf("WARNING: Could not start ACME challenge server on port 80: %v. Let's Encrypt may fail.", err)
 			}
 		}()
 	}
@@ -870,20 +814,6 @@ func (s *Server) getConfigForClient(ocspManager *OCSPManager, certMap map[string
 			return &tls.Config{Certificates: []tls.Certificate{*cert}}, nil
 		}
 
-		// 3. Check for ACME certificate
-		certDir := filepath.Join(s.Config.SSLPath, "certs", "acme")
-		if s.Config.ACME != nil && s.Config.ACME.CertPath != "" {
-			certDir = s.Config.ACME.CertPath
-		}
-		acmeCertPath := filepath.Join(certDir, domain+".crt")
-		acmeKeyPath := filepath.Join(certDir, domain+".key")
-		if _, err := os.Stat(acmeCertPath); err == nil {
-			cert, err := tls.LoadX509KeyPair(acmeCertPath, acmeKeyPath)
-			if err == nil {
-				s.debugLog("Found ACME certificate for %s", domain)
-				return &tls.Config{Certificates: []tls.Certificate{cert}}, nil
-			}
-		}
 
 		// 4. Fallback to Default Self-Signed Cert
 		if defaultTLSCert != nil {
