@@ -74,7 +74,8 @@ server {
 ## 🔒 Configuration SSL
 
 Titan prend en charge SSL/TLS sans modifier le fichier de configuration.
-Dossier : `/etc/titan/certs/manual/`
+Dossier : `/etc/titan/certs/manual/`.
+
 Titan Certbot : [Voir Titan Certbot]([docs/modules.md](https://github.com/bastivanconsulting/TITAN-CERBOT)).
 
 ### Redirection HTTPS Automatique
