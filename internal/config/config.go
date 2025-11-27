@@ -1,7 +1,6 @@
 package config
 
 import (
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -20,7 +19,6 @@ type Config struct {
 	Cache       *Cache
 	Security    *GlobalSecurity
 	Sites       []Site
-	ManualCerts map[string]*tls.Certificate
 }
 
 // Validate checks the configuration for errors

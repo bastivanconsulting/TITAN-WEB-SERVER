@@ -678,32 +678,6 @@ func (s *Server) Start() error {
 	ocspManager := NewOCSPManager()
 	hasOCSP := false
 
-	// Load manual certificates from /etc/titan/certs/manual/
-	s.Config.ManualCerts = make(map[string]*tls.Certificate)
-	manualCertDir := "/etc/titan/certs/manual/"
-	files, err := os.ReadDir(manualCertDir)
-	if err == nil {
-		for _, file := range files {
-			if strings.HasSuffix(file.Name(), ".crt") {
-				certFile := manualCertDir + file.Name()
-				keyFile := manualCertDir + strings.TrimSuffix(file.Name(), ".crt") + ".key"
-				if _, err := os.Stat(keyFile); err == nil {
-					cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-					if err != nil {
-						fmt.Printf("Warning: Could not load manual certificate %s: %v\n", file.Name(), err)
-						continue
-					}
-					// TODO: Extract domains from certificate
-					// For now, we'll use the filename as the domain
-					domain := strings.TrimSuffix(file.Name(), ".crt")
-					s.Config.ManualCerts[domain] = &cert
-					fmt.Printf("Loaded manual certificate for %s\n", domain)
-				}
-			}
-		}
-	}
-
-
 	// Ensure default self-signed certs exist
 	defaultCert := filepath.Join(s.Config.SSLPath, "server.crt")
 	defaultKey := filepath.Join(s.Config.SSLPath, "server.key")
@@ -725,11 +699,16 @@ func (s *Server) Start() error {
 					return fmt.Errorf("error loading cert for %s: %w", site.Domain, err)
 				}
 
-				domain := strings.ToLower(site.Domain)
-				certMap[domain] = &cert
-
+				// A site can have multiple domains (server_name)
+				domains := strings.Fields(site.Domain)
+				for _, d := range domains {
+					domain := strings.ToLower(d)
+					certMap[domain] = &cert
+					if site.SSL.OCSPStapling {
+						ocspManager.AddCertificate(domain, &cert)
+					}
+				}
 				if site.SSL.OCSPStapling {
-					ocspManager.AddCertificate(domain, &cert)
 					hasOCSP = true
 				}
 			}
@@ -813,15 +792,6 @@ func (s *Server) getConfigForClient(ocspManager *OCSPManager, certMap map[string
 		// Public-facing certificate logic
 		domain := strings.ToLower(hello.ServerName)
 		s.debugLog("GetCertificate called for domain: %s", domain)
-
-		// 1. Check Manually loaded certs from /etc/titan/certs/manual
-		s.mu.RLock()
-		manualCert, ok := s.Config.ManualCerts[domain]
-		s.mu.RUnlock()
-		if ok {
-			s.debugLog("Found manual certificate for %s in /etc/titan/certs/manual/", domain)
-			return &tls.Config{Certificates: []tls.Certificate{*manualCert}}, nil
-		}
 
 		// 2. Check Manual Certs from config file
 		if cert, ok := certMap[domain]; ok {
