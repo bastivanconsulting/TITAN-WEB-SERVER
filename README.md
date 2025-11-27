@@ -74,8 +74,7 @@ server {
 ## 🔒 Configuration SSL
 
 Titan prend en charge SSL/TLS sans modifier le fichier de configuration.
-Dossier /etc/titan/certs/manual/
-
+Dossier : `/etc/titan/certs/manual/`
 ### Redirection HTTPS Automatique
 
 Si un site est configuré avec SSL, le serveur redirigera automatiquement les requêtes HTTP vers HTTPS avec une redirection permanente (301).
