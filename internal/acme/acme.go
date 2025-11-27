@@ -16,6 +16,8 @@ import (
 	"titan-web-server/internal/config"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/go-acme/lego/v4/certificate"
 	"github.com/go-acme/lego/v4/certcrypto"
 	"github.com/go-acme/lego/v4/challenge/tlsalpn01"
@@ -94,6 +96,7 @@ type ACMEManager struct {
 	challengeProvider *tlsALPNChallengeProvider
 	ticker            *time.Ticker
 	quit              chan struct{}
+	provisionGroup    singleflight.Group
 }
 
 // GetChallengeCertificate is used by the server to get the cert for a TLS hello.
@@ -102,6 +105,14 @@ func (m *ACMEManager) GetChallengeCertificate(domain string) (*tls.Certificate, 
 		return nil, false
 	}
 	return m.challengeProvider.GetCertificate(domain)
+}
+
+// ProvisionCertificateSingleFlight ensures only one provisioning attempt per domain is active at a time.
+func (m *ACMEManager) ProvisionCertificateSingleFlight(domain string) error {
+	_, err, _ := m.provisionGroup.Do(domain, func() (interface{}, error) {
+		return nil, m.ProvisionCertificate(domain)
+	})
+	return err
 }
 
 // NewManager creates a new ACMEManager.
@@ -248,7 +259,7 @@ func (m *ACMEManager) CheckDomainsAndProvision() {
 
 			// Placeholder for certificate issuance
 			log.Printf("Domain %s is eligible for ACME certificate, attempting to provision", site.Domain)
-			err = m.provisionCertificate(site.Domain)
+			err = m.ProvisionCertificate(site.Domain)
 			if err != nil {
 				log.Printf("Failed to provision certificate for %s: %v", site.Domain, err)
 			}
@@ -256,7 +267,7 @@ func (m *ACMEManager) CheckDomainsAndProvision() {
 	}
 }
 
-func (m *ACMEManager) provisionCertificate(domain string) error {
+func (m *ACMEManager) ProvisionCertificate(domain string) error {
 	request := certificate.ObtainRequest{
 		Domains: []string{domain},
 		Bundle:  true,
@@ -357,7 +368,7 @@ func (m *ACMEManager) renewCertificates() {
 
 			if needsRenewal {
 				log.Printf("Renewing certificate for %s", site.Domain)
-				err := m.provisionCertificate(site.Domain) // Re-provisioning to renew
+				err := m.ProvisionCertificate(site.Domain) // Re-provisioning to renew
 				if err != nil {
 					log.Printf("Failed to renew certificate for %s: %v", site.Domain, err)
 				}

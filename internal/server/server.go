@@ -687,7 +687,6 @@ func (s *Server) Start() error {
 	errChan := make(chan error)
 
 	if s.acmeManager != nil {
-		s.acmeManager.CheckDomainsAndProvision()
 		s.acmeManager.Start()
 	}
 
@@ -875,16 +874,36 @@ func (s *Server) getConfigForClient(ocspManager *OCSPManager, certMap map[string
 			return &tls.Config{Certificates: []tls.Certificate{*cert}}, nil
 		}
 
-		// 3. Check for ACME certificate
-		certDir := filepath.Join(s.Config.SSLPath, "certs", "acme")
-		if s.Config.ACME != nil && s.Config.ACME.CertPath != "" {
-			certDir = s.Config.ACME.CertPath
+		// 3. Check for ACME certificate (and provision on-the-fly if needed)
+		isACMESite := false
+		for _, site := range s.Config.Sites {
+			if strings.ToLower(site.Domain) == domain && site.SSL != nil && site.SSL.Provider == "acme" {
+				isACMESite = true
+				break
+			}
 		}
-		acmeCertPath := filepath.Join(certDir, domain+".crt")
-		acmeKeyPath := filepath.Join(certDir, domain+".key")
-		if _, err := os.Stat(acmeCertPath); err == nil {
-			cert, err := tls.LoadX509KeyPair(acmeCertPath, acmeKeyPath)
-			if err == nil {
+
+		if isACMESite {
+			certDir := filepath.Join(s.Config.SSLPath, "certs", "acme")
+			if s.Config.ACME != nil && s.Config.ACME.CertPath != "" {
+				certDir = s.Config.ACME.CertPath
+			}
+			acmeCertPath := filepath.Join(certDir, domain+".crt")
+			acmeKeyPath := filepath.Join(certDir, domain+".key")
+
+			// If cert doesn't exist, try to provision it now
+			if _, err := os.Stat(acmeCertPath); os.IsNotExist(err) {
+				s.debugLog("No ACME certificate found for %s, attempting to provision on-the-fly", domain)
+				if err := s.acmeManager.ProvisionCertificateSingleFlight(domain); err != nil {
+					log.Printf("WARNING: On-the-fly ACME provisioning for %s failed: %v", domain, err)
+					// Fallthrough to default cert
+				} else {
+					s.debugLog("On-the-fly ACME provisioning for %s successful", domain)
+				}
+			}
+
+			// Try to load the certificate (it might have just been created)
+			if cert, err := tls.LoadX509KeyPair(acmeCertPath, acmeKeyPath); err == nil {
 				s.debugLog("Found ACME certificate for %s", domain)
 				return &tls.Config{Certificates: []tls.Certificate{cert}}, nil
 			}
