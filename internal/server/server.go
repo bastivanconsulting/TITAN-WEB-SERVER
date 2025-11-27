@@ -25,7 +25,6 @@ import (
 	"github.com/quic-go/quic-go/http3"
 	"github.com/yookoala/gofast"
 
-	"titan-web-server/internal/acme"
 	"titan-web-server/internal/auth"
 	"titan-web-server/internal/cache"
 	"titan-web-server/internal/cluster"
@@ -82,7 +81,6 @@ type Server struct {
 	Cache         cache.Cache
 	Logger        *Logger
 	Debug         bool
-	acmeManager   *acme.ACMEManager
 	ClusterNode   *cluster.Node // Optional cluster node
 	phpHandlers   map[string]http.Handler
 	proxyHandlers map[string]http.Handler
@@ -326,16 +324,6 @@ func NewServer(cfg *config.Config, configPath string, debug bool) *Server {
 		fmt.Printf("Warning: Failed to create log directory: %v\n", err)
 	}
 
-	var acmeManager *acme.ACMEManager
-	if cfg.ACME != nil && cfg.ACME.Enabled {
-		var err error
-		acmeManager, err = acme.NewManager(cfg)
-		if err != nil {
-			// Log the error but continue, as ACME might not be critical.
-			fmt.Printf("Warning: Could not initialize ACME manager: %v\n", err)
-		}
-	}
-
 	srv := &Server{
 		Config:        cfg,
 		ConfigPath:    configPath,
@@ -343,7 +331,6 @@ func NewServer(cfg *config.Config, configPath string, debug bool) *Server {
 		Cache:         c,
 		Logger:        logger,
 		Debug:         debug,
-		acmeManager:   acmeManager,
 		phpHandlers:   make(map[string]http.Handler),
 		proxyHandlers: make(map[string]http.Handler),
 		wafInstances:  make(map[string]*waf.WAF),
@@ -686,10 +673,6 @@ func (s *Server) Start() error {
 	// Error channel to catch failures from goroutines
 	errChan := make(chan error)
 
-	if s.acmeManager != nil {
-		s.acmeManager.Start()
-	}
-
 	// Build certificate map for SNI and prepare ACME
 	certMap := make(map[string]*tls.Certificate)
 	ocspManager := NewOCSPManager()
@@ -765,20 +748,6 @@ func (s *Server) Start() error {
 		}()
 	}
 
-	// If ACME is enabled and no server is running on port 80 (either because HTTP is disabled
-	// or on another port), start a dedicated listener for the challenge.
-	httpPort80Configured := s.Config.HTTPPort == ":80" || s.Config.HTTPPort == "80"
-	if s.acmeManager != nil && !httpPort80Configured {
-		go func() {
-			log.Println("Starting dedicated ACME challenge server on :80")
-			// Pass 's' (the main server mux) to handle the challenge
-			err := http.ListenAndServe(":80", s)
-			if err != nil {
-				log.Printf("WARNING: Could not start ACME challenge server on port 80: %v. Let's Encrypt may fail.", err)
-			}
-		}()
-	}
-
 	// Start HTTPS Server if configured
 	if s.Config.HTTPSPort != "" {
 		if hasOCSP {
@@ -845,14 +814,6 @@ func (s *Server) getConfigForClient(ocspManager *OCSPManager, certMap map[string
 		domain := strings.ToLower(hello.ServerName)
 		s.debugLog("GetCertificate called for domain: %s", domain)
 
-		// 0. Check for ACME challenge certificate first
-		if s.acmeManager != nil {
-			if cert, ok := s.acmeManager.GetChallengeCertificate(domain); ok {
-				s.debugLog("Presenting ACME challenge certificate for %s", domain)
-				return &tls.Config{Certificates: []tls.Certificate{*cert}}, nil
-			}
-		}
-
 		// 1. Check Manually loaded certs from /etc/titan/certs/manual
 		s.mu.RLock()
 		manualCert, ok := s.Config.ManualCerts[domain]
@@ -872,41 +833,6 @@ func (s *Server) getConfigForClient(ocspManager *OCSPManager, certMap map[string
 				return &tls.Config{Certificates: []tls.Certificate{certWithStaple}}, nil
 			}
 			return &tls.Config{Certificates: []tls.Certificate{*cert}}, nil
-		}
-
-		// 3. Check for ACME certificate (and provision on-the-fly if needed)
-		isACMESite := false
-		for _, site := range s.Config.Sites {
-			if strings.ToLower(site.Domain) == domain && site.SSL != nil && site.SSL.Provider == "acme" {
-				isACMESite = true
-				break
-			}
-		}
-
-		if isACMESite {
-			certDir := filepath.Join(s.Config.SSLPath, "certs", "acme")
-			if s.Config.ACME != nil && s.Config.ACME.CertPath != "" {
-				certDir = s.Config.ACME.CertPath
-			}
-			acmeCertPath := filepath.Join(certDir, domain+".crt")
-			acmeKeyPath := filepath.Join(certDir, domain+".key")
-
-			// If cert doesn't exist, try to provision it now
-			if _, err := os.Stat(acmeCertPath); os.IsNotExist(err) {
-				s.debugLog("No ACME certificate found for %s, attempting to provision on-the-fly", domain)
-				if err := s.acmeManager.ProvisionCertificateSingleFlight(domain); err != nil {
-					log.Printf("WARNING: On-the-fly ACME provisioning for %s failed: %v", domain, err)
-					// Fallthrough to default cert
-				} else {
-					s.debugLog("On-the-fly ACME provisioning for %s successful", domain)
-				}
-			}
-
-			// Try to load the certificate (it might have just been created)
-			if cert, err := tls.LoadX509KeyPair(acmeCertPath, acmeKeyPath); err == nil {
-				s.debugLog("Found ACME certificate for %s", domain)
-				return &tls.Config{Certificates: []tls.Certificate{cert}}, nil
-			}
 		}
 
 		// 4. Fallback to Default Self-Signed Cert
