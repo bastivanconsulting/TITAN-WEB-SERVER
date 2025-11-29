@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -109,6 +110,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Add global Server header
 	if isContainerized() {
 		w.Header().Set("Server", "Titan Web Container")
+	} else if runtime.GOOS == "windows" {
+		w.Header().Set("Server", "Titan Windows Server")
 	} else {
 		w.Header().Set("Server", "Titan Web Server")
 	}
@@ -678,15 +681,18 @@ func (s *Server) Start() error {
 	ocspManager := NewOCSPManager()
 	hasOCSP := false
 
-	// Load manual certificates from /etc/titan/certs/manual/
+	// Load manual certificates from [SSLPath]/certs/manual/
 	s.Config.ManualCerts = make(map[string]*tls.Certificate)
-	manualCertDir := "/etc/titan/certs/manual/"
+
+	// Default manualCertDir based on OS or Config
+	manualCertDir := filepath.Join(s.Config.SSLPath, "certs", "manual")
+
 	files, err := os.ReadDir(manualCertDir)
 	if err == nil {
 		for _, file := range files {
 			if strings.HasSuffix(file.Name(), ".crt") {
-				certFile := manualCertDir + file.Name()
-				keyFile := manualCertDir + strings.TrimSuffix(file.Name(), ".crt") + ".key"
+				certFile := filepath.Join(manualCertDir, file.Name())
+				keyFile := filepath.Join(manualCertDir, strings.TrimSuffix(file.Name(), ".crt")+".key")
 				if _, err := os.Stat(keyFile); err == nil {
 					cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 					if err != nil {
@@ -814,12 +820,12 @@ func (s *Server) getConfigForClient(ocspManager *OCSPManager, certMap map[string
 		domain := strings.ToLower(hello.ServerName)
 		s.debugLog("GetCertificate called for domain: %s", domain)
 
-		// 1. Check Manually loaded certs from /etc/titan/certs/manual
+		// 1. Check Manually loaded certs from [SSLPath]/certs/manual
 		s.mu.RLock()
 		manualCert, ok := s.Config.ManualCerts[domain]
 		s.mu.RUnlock()
 		if ok {
-			s.debugLog("Found manual certificate for %s in /etc/titan/certs/manual/", domain)
+			s.debugLog("Found manual certificate for %s in %s", domain, filepath.Join(s.Config.SSLPath, "certs", "manual"))
 			return &tls.Config{Certificates: []tls.Certificate{*manualCert}}, nil
 		}
 
