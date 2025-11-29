@@ -1,0 +1,17 @@
+[Unit]
+Description=Titan Web Server
+Documentation=https://github.com/bastivanconsulting/WebServer
+After=network.target
+
+[Service]
+Type=simple
+User=titan
+Group=titan
+# Main configuration file is expected at /etc/titan/titan-server.conf
+ExecStart=/usr/bin/titan-web-server -config /etc/titan/titan-server.conf
+Restart=always
+LimitNOFILE=65535
+# Ensure log directory exists and is writable (handled by postinst, but good to know)
+
+[Install]
+WantedBy=multi-user.target
