@@ -340,6 +340,16 @@ func isIPWhitelisted(ip string, allowList []string) bool {
 		if allowedIP == ip {
 			return true
 		}
+		// Check CIDR
+		if strings.Contains(allowedIP, "/") {
+			_, ipNet, err := net.ParseCIDR(allowedIP)
+			if err == nil {
+				parsedIP := net.ParseIP(ip)
+				if parsedIP != nil && ipNet.Contains(parsedIP) {
+					return true
+				}
+			}
+		}
 	}
 	return false
 }
@@ -348,6 +358,16 @@ func isIPBlacklisted(ip string, denyList []string) bool {
 	for _, deniedIP := range denyList {
 		if deniedIP == ip {
 			return true
+		}
+		// Check CIDR
+		if strings.Contains(deniedIP, "/") {
+			_, ipNet, err := net.ParseCIDR(deniedIP)
+			if err == nil {
+				parsedIP := net.ParseIP(ip)
+				if parsedIP != nil && ipNet.Contains(parsedIP) {
+					return true
+				}
+			}
 		}
 	}
 	return false
