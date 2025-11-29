@@ -75,7 +75,7 @@ func DecodeAST(ast *parser.ConfigAST) (*Config, error) {
 
 	if cfg.SSLPath == "" {
 		if runtime.GOOS == "windows" {
-			cfg.SSLPath = "C:\\ProgramData\\Titan\\"
+			cfg.SSLPath = ".\\"
 		} else {
 			cfg.SSLPath = "/etc/titan/"
 		}
