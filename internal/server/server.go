@@ -75,19 +75,22 @@ type ErrorData struct {
 
 // Server holds the runtime state of the server
 type Server struct {
-	mu            sync.RWMutex
-	ConfigPath    string
-	Config        *config.Config
-	Tpl           *template.Template
-	Cache         cache.Cache
-	Logger        *Logger
-	Debug         bool
-	ClusterNode   *cluster.Node // Optional cluster node
-	phpHandlers   map[string]http.Handler
-	proxyHandlers map[string]http.Handler
-	wafInstances  map[string]*waf.WAF
-	jsModules     map[string]*module.JSModule
-	htaccess      map[string]*htaccess.HTAccess
+	mu             sync.RWMutex
+	ConfigPath     string
+	Config         *config.Config
+	Tpl            *template.Template
+	Cache          cache.Cache
+	Logger         *Logger
+	Debug          bool
+	ClusterNode    *cluster.Node // Optional cluster node
+	phpHandlers    map[string]http.Handler
+	proxyHandlers  map[string]http.Handler
+	wafInstances   map[string]*waf.WAF
+	jsModules      map[string]*module.JSModule
+	htaccess       map[string]*htaccess.HTAccess
+	certMap        map[string]*tls.Certificate
+	ocspManager    *OCSPManager
+	defaultTLSCert *tls.Certificate
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -141,7 +144,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-
 
 	// 1. Match Host
 	host := r.Host
@@ -339,6 +341,8 @@ func NewServer(cfg *config.Config, configPath string, debug bool) *Server {
 		wafInstances:  make(map[string]*waf.WAF),
 		jsModules:     make(map[string]*module.JSModule),
 		htaccess:      make(map[string]*htaccess.HTAccess),
+		certMap:       make(map[string]*tls.Certificate),
+		ocspManager:   NewOCSPManager(),
 	}
 
 	// Initialize handlers (this also sorts routes)
@@ -377,7 +381,6 @@ func (s *Server) ApplyConfig(cfg *config.Config) error {
 
 	return nil
 }
-
 
 func (s *Server) initHandlersLocked() error {
 	// Clear existing handlers
@@ -581,7 +584,6 @@ func isContainerized() bool {
 	return false
 }
 
-
 func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, matchedRoute *config.Route, domain string) {
 	if matchedRoute.LimitRate > 0 {
 		limiter := rate.NewLimiter(rate.Limit(matchedRoute.LimitRate*1024), 2048*1024) // Burst of 2MB
@@ -671,14 +673,65 @@ func (rw *ResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return nil, nil, errors.New("hijack not supported")
 }
 
+// ReloadCerts reloads SSL certificates from disk without downtime
+func (s *Server) ReloadCerts() error {
+	log.Println("Reloading certificates...")
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// 1. Reload Manual Certificates
+	manualCertDir := filepath.Join(s.Config.SSLPath, "certs", "manual")
+	files, err := os.ReadDir(manualCertDir)
+	if err == nil {
+		for _, file := range files {
+			if strings.HasSuffix(file.Name(), ".crt") {
+				certFile := filepath.Join(manualCertDir, file.Name())
+				keyFile := filepath.Join(manualCertDir, strings.TrimSuffix(file.Name(), ".crt")+".key")
+				if _, err := os.Stat(keyFile); err == nil {
+					cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+					if err != nil {
+						log.Printf("Warning: Could not reload manual certificate %s: %v", file.Name(), err)
+						continue
+					}
+					domain := strings.TrimSuffix(file.Name(), ".crt")
+					s.Config.ManualCerts[domain] = &cert
+					log.Printf("Reloaded manual certificate for %s", domain)
+				}
+			}
+		}
+	}
+
+	// 2. Reload Site Certificates
+	for _, site := range s.Config.Sites {
+		if site.SSL != nil && site.SSL.Enabled {
+			if site.SSL.Certificate != "" && site.SSL.CertificateKey != "" {
+				cert, err := tls.LoadX509KeyPair(site.SSL.Certificate, site.SSL.CertificateKey)
+				if err != nil {
+					log.Printf("Error reloading cert for %s: %v", site.Domain, err)
+					continue
+				}
+
+				domain := strings.ToLower(site.Domain)
+				s.certMap[domain] = &cert
+
+				if site.SSL.OCSPStapling {
+					s.ocspManager.AddCertificate(domain, &cert)
+				}
+				log.Printf("Reloaded certificate for site: %s", site.Domain)
+			}
+		}
+	}
+
+	return nil
+}
+
 // Start starts the HTTP server
 func (s *Server) Start() error {
 	// Error channel to catch failures from goroutines
 	errChan := make(chan error)
 
-	// Build certificate map for SNI and prepare ACME
-	certMap := make(map[string]*tls.Certificate)
-	ocspManager := NewOCSPManager()
+	s.mu.Lock()
 	hasOCSP := false
 
 	// Load manual certificates from [SSLPath]/certs/manual/
@@ -709,18 +762,16 @@ func (s *Server) Start() error {
 		}
 	}
 
-
 	// Ensure default self-signed certs exist
-	defaultCert := filepath.Join(s.Config.SSLPath, "server.crt")
-	defaultKey := filepath.Join(s.Config.SSLPath, "server.key")
-	if err := tlsutil.EnsureDefaultCert(defaultCert, defaultKey); err != nil {
+	defaultCertPath := filepath.Join(s.Config.SSLPath, "server.crt")
+	defaultKeyPath := filepath.Join(s.Config.SSLPath, "server.key")
+	if err := tlsutil.EnsureDefaultCert(defaultCertPath, defaultKeyPath); err != nil {
 		fmt.Printf("Warning: Could not generate default self-signed certs: %v\n", err)
 	}
 
 	// Load Default Cert
-	var defaultTLSCert *tls.Certificate
-	if defCert, err := tls.LoadX509KeyPair(defaultCert, defaultKey); err == nil {
-		defaultTLSCert = &defCert
+	if defCert, err := tls.LoadX509KeyPair(defaultCertPath, defaultKeyPath); err == nil {
+		s.defaultTLSCert = &defCert
 	}
 
 	for _, site := range s.Config.Sites {
@@ -728,19 +779,21 @@ func (s *Server) Start() error {
 			if site.SSL.Certificate != "" && site.SSL.CertificateKey != "" {
 				cert, err := tls.LoadX509KeyPair(site.SSL.Certificate, site.SSL.CertificateKey)
 				if err != nil {
+					s.mu.Unlock()
 					return fmt.Errorf("error loading cert for %s: %w", site.Domain, err)
 				}
 
 				domain := strings.ToLower(site.Domain)
-				certMap[domain] = &cert
+				s.certMap[domain] = &cert
 
 				if site.SSL.OCSPStapling {
-					ocspManager.AddCertificate(domain, &cert)
+					s.ocspManager.AddCertificate(domain, &cert)
 					hasOCSP = true
 				}
 			}
 		}
 	}
+	s.mu.Unlock()
 
 	// Start HTTP Server if configured
 	if s.Config.HTTPPort != "" {
@@ -757,7 +810,7 @@ func (s *Server) Start() error {
 	// Start HTTPS Server if configured
 	if s.Config.HTTPSPort != "" {
 		if hasOCSP {
-			ocspManager.Start()
+			s.ocspManager.Start()
 		}
 
 		// Always start HTTPS if configured (might be for ACME only)
@@ -770,7 +823,7 @@ func (s *Server) Start() error {
 				tlsConfig = &tls.Config{}
 			}
 
-			tlsConfig.GetConfigForClient = s.getConfigForClient(ocspManager, certMap, defaultTLSCert)
+			tlsConfig.GetConfigForClient = s.getConfigForClient()
 			tlsConfig.NextProtos = []string{"h3", "http/1.1"} // Advertise HTTP/3 support
 
 			// Start HTTP/3 (QUIC) Server
@@ -814,25 +867,26 @@ func (s *Server) Start() error {
 	return <-errChan
 }
 
-func (s *Server) getConfigForClient(ocspManager *OCSPManager, certMap map[string]*tls.Certificate, defaultTLSCert *tls.Certificate) func(*tls.ClientHelloInfo) (*tls.Config, error) {
+func (s *Server) getConfigForClient() func(*tls.ClientHelloInfo) (*tls.Config, error) {
 	return func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 		// Public-facing certificate logic
 		domain := strings.ToLower(hello.ServerName)
 		s.debugLog("GetCertificate called for domain: %s", domain)
 
-		// 1. Check Manually loaded certs from [SSLPath]/certs/manual
 		s.mu.RLock()
+		defer s.mu.RUnlock()
+
+		// 1. Check Manually loaded certs from [SSLPath]/certs/manual
 		manualCert, ok := s.Config.ManualCerts[domain]
-		s.mu.RUnlock()
 		if ok {
 			s.debugLog("Found manual certificate for %s in %s", domain, filepath.Join(s.Config.SSLPath, "certs", "manual"))
 			return &tls.Config{Certificates: []tls.Certificate{*manualCert}}, nil
 		}
 
 		// 2. Check Manual Certs from config file
-		if cert, ok := certMap[domain]; ok {
+		if cert, ok := s.certMap[domain]; ok {
 			s.debugLog("Found manual certificate for %s in config file", domain)
-			if staple := ocspManager.GetStaple(domain); staple != nil {
+			if staple := s.ocspManager.GetStaple(domain); staple != nil {
 				s.debugLog("Applying OCSP staple for %s", domain)
 				certWithStaple := *cert
 				certWithStaple.OCSPStaple = staple
@@ -842,9 +896,9 @@ func (s *Server) getConfigForClient(ocspManager *OCSPManager, certMap map[string
 		}
 
 		// 4. Fallback to Default Self-Signed Cert
-		if defaultTLSCert != nil {
+		if s.defaultTLSCert != nil {
 			s.debugLog("No specific certificate found for %s. Falling back to default self-signed cert.", domain)
-			return &tls.Config{Certificates: []tls.Certificate{*defaultTLSCert}}, nil
+			return &tls.Config{Certificates: []tls.Certificate{*s.defaultTLSCert}}, nil
 		}
 
 		s.debugLog("No certificate found for domain %s and no default certificate available.", domain)

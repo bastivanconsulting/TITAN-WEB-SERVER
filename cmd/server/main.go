@@ -55,6 +55,8 @@ func main() {
 
 	srv := server.NewServer(cfg, *configFile, *debug)
 
+	// Setup OS-specific signal handlers (e.g., SIGHUP for reload on Unix)
+	setupSignalHandler(srv)
 
 	if err := srv.Start(); err != nil {
 		log.Fatalf("Server failed: %v", err)

@@ -1,0 +1,42 @@
+name: "titan-web-server"
+arch: "amd64"
+platform: "linux"
+version: "${VERSION}"
+section: "web"
+priority: "extra"
+maintainer: "Bastivan Consulting <contact@bastivanconsulting.com>"
+description: "Titan Web Server"
+license: "Proprietary"
+contents:
+  - src: ./titan-web-server
+    dst: /usr/bin/titan-web-server
+    file_info:
+      mode: 0755
+  - src: ./titan-server.conf
+    dst: /etc/titan/titan-server.conf
+    type: config
+    file_info:
+      mode: 0644
+  - src: ./packaging/systemd/titan-web-server.service
+    dst: /etc/systemd/system/titan-web-server.service
+    file_info:
+      mode: 0644
+  - src: ./VERSION
+    dst: /usr/share/titan-web-server/VERSION
+    file_info:
+      mode: 0644
+  - dst: /var/log/titan
+    type: dir
+    file_info:
+      mode: 0755
+      owner: titan
+      group: titan
+  - dst: /var/lib/titan-server
+    type: dir
+    file_info:
+      mode: 0755
+      owner: titan
+      group: titan
+scripts:
+  postinstall: ./packaging/scripts/postinst.sh
+  preremove: ./packaging/scripts/prerm.sh
