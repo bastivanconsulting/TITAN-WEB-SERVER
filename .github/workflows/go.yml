@@ -73,6 +73,7 @@ jobs:
   package:
     runs-on: ubuntu-latest
     needs: build
+    # Run on tags OR on main branch so we can test the package generation
     if: success() && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')
     steps:
       - uses: actions/checkout@v4
@@ -87,52 +88,6 @@ jobs:
         run: |
           go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
           echo "$HOME/go/bin" >> $GITHUB_PATH
-
-      - name: Create packaging scripts
-        run: |
-          mkdir -p scripts
-          cat > scripts/titan-server.service << 'EOF'
-          [Unit]
-          Description=Titan Web Server
-          Documentation=https://github.com/bastivanconsulting/WebServer
-          After=network.target
-
-          [Service]
-          Type=simple
-          User=titan
-          Group=titan
-          ExecStart=/usr/bin/titan-web-server -config /etc/titan-server/titan-server.conf -node-id %H -raft-addr 0.0.0.0:9000 -raft-dir /var/lib/titan-server
-          Restart=always
-          LimitNOFILE=65535
-
-          [Install]
-          WantedBy=multi-user.target
-          EOF
-
-          cat > scripts/postinst.sh << 'EOF'
-          #!/bin/bash
-          if ! getent group titan > /dev/null; then
-              groupadd -r titan
-          fi
-          if ! getent passwd titan > /dev/null; then
-              useradd -r -g titan -d /var/lib/titan-server -s /sbin/nologin -c "Titan Web Server" titan
-          fi
-          mkdir -p /var/log/titan /var/lib/titan-server
-          chown -R titan:titan /var/log/titan /var/lib/titan-server
-          systemctl daemon-reload
-          systemctl enable titan-server.service
-          EOF
-
-          cat > scripts/prerm.sh << 'EOF'
-          #!/bin/bash
-          if [ "$1" = "remove" ]; then
-              systemctl stop titan-server.service || :
-              systemctl disable titan-server.service || :
-              systemctl daemon-reload
-          fi
-          EOF
-
-          chmod +x scripts/postinst.sh scripts/prerm.sh
 
       - name: Create nfpm configuration
         run: |
@@ -153,12 +108,16 @@ jobs:
               file_info:
                 mode: 0755
             - src: ./titan-server.conf
-              dst: /etc/titan-server/titan-server.conf
+              dst: /etc/titan/titan-server.conf
               type: config
               file_info:
                 mode: 0644
-            - src: ./scripts/titan-server.service
-              dst: /etc/systemd/system/titan-server.service
+            - src: ./packaging/systemd/titan-web-server.service
+              dst: /etc/systemd/system/titan-web-server.service
+              file_info:
+                mode: 0644
+            - src: ./VERSION
+              dst: /usr/share/titan-web-server/VERSION
               file_info:
                 mode: 0644
             - dst: /var/log/titan
@@ -174,8 +133,8 @@ jobs:
                 owner: titan
                 group: titan
           scripts:
-            postinstall: ./scripts/postinst.sh
-            preremove: ./scripts/prerm.sh
+            postinstall: ./packaging/scripts/postinst.sh
+            preremove: ./packaging/scripts/prerm.sh
           EOF
 
       - name: Build DEB & RPM packages
