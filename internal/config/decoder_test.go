@@ -1,6 +1,7 @@
 package config
 
 import (
+	"runtime"
 	"testing"
 	"titan-web-server/internal/config/parser"
 	"github.com/stretchr/testify/assert"
@@ -29,5 +30,10 @@ func TestDecodeSSLPath(t *testing.T) {
 
 	cfg2, err := DecodeAST(ast2)
 	assert.NoError(t, err)
-	assert.Equal(t, "/etc/titan/", cfg2.SSLPath)
+
+	expected := "/etc/titan/"
+	if runtime.GOOS == "windows" {
+		expected = ".\\"
+	}
+	assert.Equal(t, expected, cfg2.SSLPath)
 }
