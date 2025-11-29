@@ -123,23 +123,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// HTTPS Redirect
-	if r.TLS == nil {
-		s.mu.RLock()
-		defer s.mu.RUnlock()
-		for _, site := range s.Config.Sites {
-			if site.Domain == r.Host && site.SSL != nil && site.SSL.Enabled {
-				target := "https://" + r.Host + r.URL.Path
-				if r.URL.RawQuery != "" {
-					target += "?" + r.URL.RawQuery
-				}
-				http.Redirect(w, r, target, http.StatusPermanentRedirect)
-				return
-			}
-		}
-	}
-
-
 	// 1. Match Host
 	host := r.Host
 	// Remove port if present
@@ -154,6 +137,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				host = strings.Split(r.Host, ":")[0]
 			}
 		}
+	}
+
+	// HTTPS Redirect
+	if r.TLS == nil {
+		s.mu.RLock()
+		for _, site := range s.Config.Sites {
+			if site.Domain == host && site.SSL != nil && site.SSL.Enabled {
+				s.mu.RUnlock()
+				target := "https://" + host + r.URL.Path
+				if r.URL.RawQuery != "" {
+					target += "?" + r.URL.RawQuery
+				}
+				http.Redirect(w, r, target, http.StatusPermanentRedirect)
+				return
+			}
+		}
+		s.mu.RUnlock()
 	}
 
 	// Read config safely
