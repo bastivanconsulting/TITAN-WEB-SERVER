@@ -1,18 +1,19 @@
-# TITAN WEB SERVER v1.25.1
+# TITAN WEB SERVER 🚀
 
-**Titan Web Server** est une solution de serveur web et reverse proxy haute performance, conçu pour la simplicité et l'extensibilité.
+**Titan Web Server** est une solution de serveur web et reverse proxy haute performance, conçue en Go pour allier simplicité, sécurité et extensibilité.
 
 ---
 
 ## 📋 Prérequis
 
-*   **Système d'exploitation** : Linux, macOS, ou Windows.
-*   **Langage** : Go **1.24** ou supérieur.
-    *   [Télécharger Go](https://go.dev/dl/)
+* **Système d'exploitation** : Linux (recommandé), macOS, ou Windows.
+* **Langage** : Go **1.24** ou supérieur.
 
 ---
 
 ## 🛠️ Installation et Compilation
+
+Titan Web Server est distribué sous forme de code source.
 
 1.  **Cloner le dépôt** :
     ```bash
@@ -26,193 +27,103 @@
     go build -o titan-web-server cmd/server/main.go
     ```
 
+3.  **Démarrer le serveur** (utilise `./titan-server.conf` par défaut) :
+    ```bash
+    ./titan-web-server -config titan-server.conf
+    ```
+
 ---
 
 ## ⚙️ Configuration
 
-Titan Server utilise un format de configuration de type Nginx.
+Titan Server utilise un format de configuration de type Nginx, avec la prise en charge des répertoires `sites-enabled/` et `conf.d/`.
 
-### Structure des Fichiers
-*   **Fichier Principal** : `titan-server.conf`
-*   **Modules** : `conf.d/`
-*   **Sites** : `sites-enabled/`
+### Directives Globales
 
-### Exemple de `titan-server.conf`
+| Directive | Description | Exemple |
+| :--- | :--- | :--- |
+| `http_port` | Port d'écoute HTTP. | `:8080;` |
+| `https_port` | Port d'écoute HTTPS/QUIC. | `:8443;` |
+| `log_dir` | Répertoire pour les logs d'accès et d'erreur. | `"/var/log/titan/";` |
+| `security` | Bloc pour les options de sécurité globale. | `fips_compliant on;` |
+| `cache` | Bloc pour la configuration de la mise en cache (type `memory` ou `disk`). | `type memory;` |
 
-```nginx
-# Ports d'écoute
-# Le serveur écoutera sur toutes les interfaces, y compris IPv4 et IPv6.
-http_port :8080;
-https_port :8443;
+### Bloc `server` et `location`
 
-# Pour écouter uniquement sur une adresse IPv6 spécifique :
-# http_port [::1]:8080;
+Un bloc `http` contient des blocs `server` (hôtes virtuels), qui à leur tour contiennent des blocs `location` (routes).
 
-# Logs
-log_dir "/var/log/titan/";
-
-# Sécurité Globale
-security {
-    fips_compliant on;
-}
-```
-
-### Exemple de fichier de site dans `sites-enabled/`
-
-```nginx
-server {
-    server_name www.example.com;
-
-    location / {
-        root /var/www/html;
-    }
-}
-```
+| Type de Route | Directive Clé | Description |
+| :--- | :--- | :--- |
+| **Statique** | `root` | Sert des fichiers depuis le disque. |
+| **Reverse Proxy** | `proxy_pass` / `upstreams` | Redirige le trafic vers un backend (URL ou adresse FastCGI). |
+| **PHP (FastCGI)** | `fastcgi_pass` | Exécute des scripts PHP via un gestionnaire PHP-FPM externe. |
 
 ---
 
-## 🔒 Configuration SSL
+## 🔒 Sécurité et SSL/TLS
 
-Titan prend en charge SSL/TLS sans modifier le fichier de configuration.
-Dossier : `/etc/titan/certs/manual/`.
+### SSL et HSTS
 
-Titan Certbot : https://github.com/bastivanconsulting/TITAN-CERBOT
+Le bloc `ssl` permet de configurer le chiffrement pour un serveur.
 
-### Redirection HTTPS Automatique
+* **Redirection HTTPS Automatique** : Les requêtes HTTP sont automatiquement redirigées vers HTTPS si SSL est activé pour le site.
+* **HSTS** : Prise en charge des directives HTTP Strict Transport Security (`max_age`, `include_subdomains`, `preload`).
+* **Conformité FIPS** : Le mode `fips_compliant on` active des contraintes de sécurité élevées (TLS 1.2+ et suites de chiffrement robustes).
 
-Si un site est configuré avec SSL, le serveur redirigera automatiquement les requêtes HTTP vers HTTPS avec une redirection permanente (301).
+### WAF (Web Application Firewall)
 
----
+Le WAF est basé sur Coraza/ModSecurity pour protéger contre les attaques courantes.
 
-##  htaccess
-
-Titan prend en charge un sous-ensemble des directives des fichiers `.htaccess` pour les routes statiques et PHP. Placez simplement un fichier `.htaccess` à la racine de votre site.
-
-### Directives prises en charge
-
-*   `RewriteRule`
-*   `RewriteCond`
-
----
-
-## 🚀 Modules JavaScript
-
-Étendez les fonctionnalités de Titan avec des modules JavaScript. [Voir la documentation des modules](docs/modules.md).
+| Directive WAF | Description |
+| :--- | :--- |
+| `check_sqli` | Protection contre l'injection SQL. |
+| `check_xss` | Protection contre les failles XSS (Cross-Site Scripting). |
+| `waf_wp` / `waf_joomla` | Règles spécifiques pour les applications WordPress et Joomla. |
+| `js_challenge` | Mode de vérification JavaScript pour les attaques. |
+| `rate_limit` | Limitation du taux de requêtes par IP. |
 
 ---
 
-## 🛡️ WAF (Web Application Firewall)
+## ⚡️ Performance et Extensibilité
 
-Le WAF protège vos applications contre les attaques courantes.
+### Load Balancing
 
-### Directives du WAF
+Titan implémente l'équilibrage de charge pour les routes `proxy` en utilisant différents algorithmes :
 
-*   `waf on|off;`
-*   `waf_wp on|off;` (Protection WordPress)
-*   `waf_joomla on|off;` (Protection Joomla)
-*   `waf_php on|off;` (Protection PHP)
+* **`round_robin`** (défaut)
+* **`least_conn`**
+* **`ip_hash`**
 
----
+Les contrôles de santé (`health_check`) de type `web` (HTTP) et `tcp` sont supportés.
 
-## ⚡️ Performance
+### Modules JavaScript
 
-### Compression GZIP
+Il est possible d'étendre les fonctionnalités du serveur en injectant des modules JavaScript qui peuvent inspecter et modifier les requêtes et les réponses HTTP.
 
-Activez la compression GZIP pour réduire la taille des réponses.
+* **Directive** : 
+    ```nginx
+    js_module /chemin/vers/votre/module.js;
+    ```
+* La fonction exportée `main(request, response)` est exécutée lors du traitement de la requête.
 
-*   **Syntaxe** : `gzip on|off;`
-*   **Contexte** : `server`
+### Mise en Cache et GZIP
 
-### Mise en Cache
-
-Titan prend en charge la mise en cache en mémoire et sur disque.
-
-*   **Syntaxe** :
+* **Mise en Cache** : Le cache en mémoire (`memory`) ou sur disque (`disk`) peut être configuré globalement.
     ```nginx
     cache {
-        type memory|disk;
-        path /chemin/vers/le/cache;
+        type memory;
+        # path "/var/cache/titan/"; # Requis si le type est 'disk'
     }
     ```
-*   **Contexte** : `http`
+* **Compression GZIP** : Activée par la directive `gzip on;` dans le bloc `server`.
 
 ---
 
-## 📖 Directives de Location
+## 🐳 Déploiement Docker
 
-### `auth_basic`
+Le serveur peut être conteneurisé facilement.
 
-Active l'authentification HTTP Basic pour une `location`.
-
-*   **Syntaxe** : `auth_basic "Message"`
-*   **Contexte** : `location`
-
-### `auth_basic_user_file`
-
-Spécifie le fichier `.htpasswd` à utiliser pour l'authentification.
-
-*   **Syntaxe** : `auth_basic_user_file /chemin/vers/le/fichier`
-*   **Contexte** : `location`
-
-### `proxy_ssl_verify`
-
-Active ou désactive la vérification des certificats SSL pour les `proxy_pass` HTTPS.
-
-*   **Syntaxe** : `proxy_ssl_verify on|off`
-*   **Défaut** : `on`
-*   **Contexte** : `location`
-
-### `limit_rate`
-
-Limite la vitesse de téléchargement pour une `location`.
-
-*   **Syntaxe** : `limit_rate <vitesse>k` (en Ko/s)
-*   **Contexte** : `location`
-
----
-
-## ⚖️ Load Balancing
-
-Titan supporte le load balancing pour les routes `proxy`.
-
-### Algorithmes
-
-*   `round_robin` (défaut) : Distribue les requêtes de manière circulaire.
-*   `least_conn` : Envoie les nouvelles requêtes au serveur avec le moins de connexions actives.
-*   `ip_hash` : Assure que les requêtes d'une même adresse IP client sont dirigées vers le même serveur.
-
-### Health Checks
-
-*   `web` : Effectue une requête HTTP GET sur une URL spécifiée.
-*   `tcp` : Tente d'établir une connexion TCP avec le serveur.
-
-### Exemple de configuration
-
-```nginx
-location /api/ {
-    upstreams http://backend1:8080 http://backend2:8080;
-
-    load_balancer {
-        algorithm least_conn;
-        health_check {
-            type web;
-            path "/health";
-            interval 5s;
-            timeout 2s;
-        }
-    }
-}
-```
-
----
-
-## 🚀 Déploiement
-
-Déployez Titan Web Server en utilisant Docker ou Kubernetes.
-
-### Docker
-
-1.  **Construire l'image Docker** :
+1.  **Construire l'image** :
     ```bash
     docker build -t titan-web-server:latest .
     ```
@@ -222,31 +133,4 @@ Déployez Titan Web Server en utilisant Docker ou Kubernetes.
     docker run -p 8080:8080 titan-web-server:latest
     ```
 
-### Kubernetes / K3s
-
-1.  **Appliquer les manifestes** :
-    ```bash
-    kubectl apply -f k8s/
-    ```
-
-2.  **Vérifier le déploiement** :
-    ```bash
-    kubectl get all
-    ```
-
 ---
-
-## 🤝 Contribuer
-
-Les contributions sont les bienvenues !
-
-### Lancer les tests
-```bash
-go test ./...
-```
-
-### Proposer des changements
-1.  Forkez le dépôt.
-2.  Créez une nouvelle branche.
-3.  Faites vos changements.
-4.  Ouvrez une Pull Request.
