@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"runtime"
 	"strconv"
 	"titan-web-server/internal/config/parser"
 )
@@ -73,7 +74,11 @@ func DecodeAST(ast *parser.ConfigAST) (*Config, error) {
 	}
 
 	if cfg.SSLPath == "" {
-		cfg.SSLPath = "/etc/titan/"
+		if runtime.GOOS == "windows" {
+			cfg.SSLPath = "C:\\ProgramData\\Titan\\"
+		} else {
+			cfg.SSLPath = "/etc/titan/"
+		}
 	}
 
 	return cfg, nil
